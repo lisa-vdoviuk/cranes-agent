@@ -1,0 +1,16 @@
+pandas
+openpyxl
+
+groq
+python-dotenv
+pydantic
+tenacity
+
+ddgs
+requests
+beautifulsoup4
+trafilatura
+tldextract
+Pillow
+
+streamlit
