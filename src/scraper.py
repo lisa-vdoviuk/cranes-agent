@@ -212,39 +212,66 @@ def _extract_clean_text(html: str, url: str) -> str:
 # ----------------------------
 
 
-def _looks_like_relevant_image(src: str, alt: str, title: str) -> bool:
-    haystack = f"{src} {alt} {title}".lower()
+def _looks_like_relevant_image(src: str, alt: str, title: str, context: str = "") -> bool:
+    haystack = f"{src} {alt} {title} {context}".lower()
     return any(term in haystack for term in IMAGE_RELEVANCE_TERMS)
 
 
-def _image_candidates(html: str, base_url: str, max_candidates: int = 6) -> list[tuple[str, str]]:
+def _srcset_candidates(srcset: str) -> list[str]:
+    urls: list[str] = []
+    for part in str(srcset or "").split(","):
+        candidate = part.strip().split(" ", 1)[0].strip()
+        if candidate:
+            urls.append(candidate)
+    return urls
+
+
+def _background_image_urls(style: str) -> list[str]:
+    return [match.group(1).strip("'\"") for match in re.finditer(r"url\(([^)]+)\)", str(style or ""), flags=re.I)]
+
+
+def _image_candidates(html: str, base_url: str, max_candidates: int = 8) -> list[tuple[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[tuple[str, str]] = []
 
     # OpenGraph images are often the main hero/fleet image.
     for meta in soup.find_all("meta"):
         prop = str(meta.get("property") or meta.get("name") or "").lower()
-        if prop in {"og:image", "twitter:image"}:
+        if prop in {"og:image", "twitter:image", "twitter:image:src"}:
             src = str(meta.get("content") or "").strip()
             if src:
                 candidates.append((urljoin(base_url, src), "open graph image"))
 
     for img in soup.find_all("img"):
-        src = str(img.get("src") or img.get("data-src") or img.get("data-original") or "").strip()
-        if not src:
-            continue
+        src_values = [
+            str(img.get(name) or "").strip()
+            for name in ("src", "data-src", "data-original", "data-lazy-src", "data-ll-src", "data-srcset")
+        ]
+        src_values.extend(_srcset_candidates(str(img.get("srcset") or "")))
         alt = str(img.get("alt") or "").strip()
         title = str(img.get("title") or "").strip()
-        if not _looks_like_relevant_image(src, alt, title):
-            continue
-        label = " ".join(part for part in [alt, title] if part).strip() or "crane-related image candidate"
-        candidates.append((urljoin(base_url, src), label))
+        parent_text = img.parent.get_text(" ", strip=True)[:160] if img.parent else ""
+        label = " ".join(part for part in [alt, title, parent_text] if part).strip() or "crane-related image candidate"
+        for src in src_values:
+            if not src:
+                continue
+            if not _looks_like_relevant_image(src, alt, title, parent_text):
+                continue
+            candidates.append((urljoin(base_url, src), label))
+
+    # Some modern sites use CSS background images for fleet/hero photos.
+    for tag in soup.find_all(style=True):
+        style = str(tag.get("style") or "")
+        context = tag.get_text(" ", strip=True)[:160]
+        for src in _background_image_urls(style):
+            if _looks_like_relevant_image(src, "", "", context):
+                candidates.append((urljoin(base_url, src), context or "crane-related CSS background image"))
 
     output: list[tuple[str, str]] = []
     seen: set[str] = set()
     for url, label in candidates:
-        lowered = url.lower().split("?", 1)[0]
-        if not lowered.endswith((".jpg", ".jpeg", ".png", ".webp")):
+        lowered = url.lower()
+        if lowered.startswith("data:") or "svg" in lowered:
             continue
         if url in seen:
             continue

@@ -336,12 +336,55 @@ def merge_edits_back(master_df: pd.DataFrame, edited_df: pd.DataFrame) -> pd.Dat
 # ----------------------------
 
 
+COLOR_DEFINITIONS = [
+    ("yellow", "#FACC15", ["yellow", "gelb", "gelbe", "gelber", "gelben", "gelbes", "gelbem", "gelb/schwarz", "gold", "golden"]),
+    ("red", "#EF4444", ["red", "rot", "rote", "roter", "roten", "rotes", "rotem"]),
+    ("blue", "#3B82F6", ["blue", "blau", "blaue", "blauer", "blauen", "blaues", "blauem"]),
+    ("green", "#22C55E", ["green", "grün", "gruen", "grüne", "gruene", "grüner", "gruener", "grünen", "gruenen", "grünem", "gruenem"]),
+    ("orange", "#F97316", ["orange", "orangen", "orangefarben"]),
+    ("white", "#F8FAFC", ["white", "weiß", "weiss", "weiße", "weisse", "weißer", "weisser", "weißen", "weissen", "weißem", "weissem"]),
+    ("black", "#111827", ["black", "schwarz", "schwarze", "schwarzer", "schwarzen", "schwarzes", "schwarzem"]),
+    ("grey", "#9CA3AF", ["grey", "gray", "grau", "graue", "grauer", "grauen", "graues", "grauem"]),
+    ("silver", "#CBD5E1", ["silver", "silber", "silbern", "silberfarben"]),
+    ("purple", "#A855F7", ["purple", "violet", "violett", "lila"]),
+    ("brown", "#92400E", ["brown", "braun", "braune", "brauner", "braunen"]),
+]
+
+COLOR_NAME_TO_HEX = {name: hex_value for name, hex_value, _ in COLOR_DEFINITIONS}
+COLOR_ALIAS_TO_NAME = {
+    alias.lower(): name
+    for name, _, aliases in COLOR_DEFINITIONS
+    for alias in aliases
+}
+
+STATUS_BADGE_CLASS = {
+    "Active": "status-active",
+    "Acquired": "status-acquired",
+    "Defunct": "status-defunct",
+    "Merged": "status-merged",
+    "Rebranded": "status-rebranded",
+    "Unclear": "status-unclear",
+    "Not Relevant": "status-muted",
+}
+
+
+OTHER_COLOR_WORDS = {"or", "and", "und", "oder", "with", "mit", "main", "body", "boom", "jib", "ausleger"}
+
+
 def _safe_cell(value: object, max_len: int = 220) -> str:
     text = "" if value is None else str(value)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > max_len:
         text = text[:max_len].rsplit(" ", 1)[0] + "..."
     return html.escape(text)
+
+
+def _plain_text(value: object, max_len: int | None = None) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_len and len(text) > max_len:
+        text = text[:max_len].rsplit(" ", 1)[0] + "..."
+    return text
 
 
 def _company_anchor(company_name: str, url: str) -> str:
@@ -352,9 +395,313 @@ def _company_anchor(company_name: str, url: str) -> str:
     return f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">{safe_name}</a>'
 
 
+def _status_badge(status: object) -> str:
+    text = _plain_text(status) or "Unclear"
+    css_class = STATUS_BADGE_CLASS.get(text, "status-unclear")
+    return f'<span class="status-badge {css_class}">{html.escape(text)}</span>'
+
+
+def _confidence_pill(value: object, label: str = "") -> str:
+    try:
+        confidence = max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    pct = f"{confidence:.0%}"
+    if confidence >= 0.7:
+        css_class = "conf-high"
+    elif confidence >= 0.35:
+        css_class = "conf-mid"
+    else:
+        css_class = "conf-low"
+
+    text = f"{label} {pct}".strip()
+    return f'<span class="confidence-pill {css_class}">{html.escape(text)}</span>'
+
+
+def _color_alias_regex() -> str:
+    aliases = sorted(COLOR_ALIAS_TO_NAME.keys(), key=len, reverse=True)
+    return r"\b(" + "|".join(re.escape(alias) for alias in aliases) + r")\b"
+
+
+def _find_color_names(text: str) -> list[str]:
+    if not text:
+        return []
+
+    found: list[str] = []
+    for match in re.finditer(_color_alias_regex(), text.lower(), flags=re.I):
+        color = COLOR_ALIAS_TO_NAME.get(match.group(1).lower())
+        if color and color not in found:
+            found.append(color)
+    return found
+
+
+def _clean_color_part(part: str) -> str:
+    part = re.sub(r"\s+", " ", part or "").strip(" .,:;|-–—")
+    part = re.sub(r"^(typical|fleet|brand|livery|colors?|colou?rs?)\s+", "", part, flags=re.I)
+    part = part.strip(" .,:;|-–—")
+
+    replacements = {
+        "ausleger": "boom",
+        "oberwagen": "upper",
+        "unterwagen": "chassis",
+        "gegengewicht": "counterweight",
+        "kabine": "cab",
+        "hauptfarbe": "main",
+        "akzente": "accents",
+        "körper": "body",
+    }
+
+    lowered = part.lower()
+    for source, target in replacements.items():
+        lowered = re.sub(rf"\b{re.escape(source)}\b", target, lowered)
+
+    lowered = re.sub(r"\s*/\s*", "/", lowered)
+    lowered = re.sub(r"\s*&\s*", "/", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+
+    if not lowered or len(lowered) > 42:
+        return "crane"
+    return lowered
+
+
+def _split_possible_color_pairs(text: str) -> list[tuple[str, str]]:
+    """Return (part, color-text) pairs from semi-structured strings."""
+    if not text:
+        return []
+
+    normalized = re.sub(r"\s+", " ", text).strip()
+    normalized = normalized.replace("—", "-").replace("–", "-")
+
+    # Examples handled:
+    # boom/main - yellow; accents/counterweight - black or grey
+    # Ausleger: gelb, main body = red
+    # typical Liebherr livery: boom/main - yellow
+    segments = re.split(
+        r";|\n|,(?=\s*[A-Za-zÄÖÜäöüß0-9 /&+_.()]{2,42}\s*(?:-|:|=))",
+        normalized,
+    )
+
+    pair_regex = re.compile(
+        r"(?P<part>[A-Za-zÄÖÜäöüß0-9 /&+_.()]{2,60}?)"
+        r"\s*(?:-|:|=)\s*"
+        r"(?P<colors>[A-Za-zÄÖÜäöüß, /+&]+)$",
+        flags=re.I,
+    )
+
+    pairs: list[tuple[str, str]] = []
+    for segment in segments:
+        segment = segment.strip(" .,")
+        if not segment:
+            continue
+
+        # Remove non-color preambles such as "typical Liebherr LTM livery:".
+        if ":" in segment and re.search(r":[^:]*[-=]", segment):
+            segment = segment.rsplit(":", 1)[-1].strip()
+
+        match = pair_regex.search(segment)
+        if not match:
+            continue
+
+        raw_part = match.group("part")
+        raw_colors = match.group("colors")
+        if not _find_color_names(raw_colors):
+            continue
+
+        pairs.append((_clean_color_part(raw_part), raw_colors))
+
+    return pairs
+
+
+def parse_color_items(color_scheme: object, evidence_note: object = "") -> list[dict[str, str]]:
+    """Convert a free-text crane color field into displayable swatches.
+
+    The enrichment pipeline intentionally keeps color text conservative, for example:
+    "typical Liebherr LTM livery: boom/main - yellow; accents/counterweight - black or grey".
+    This parser turns that into small, safe HTML color chips without needing another LLM call.
+    """
+    scheme = _plain_text(color_scheme)
+    note = _plain_text(evidence_note)
+    combined = f"{scheme}; {note}".strip(" ;")
+
+    if not combined or combined.lower() in {"unknown", "none", "nan", "null", "n/a"}:
+        return []
+
+    items: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    # First prefer structured component-color pairs.
+    for part, color_text in _split_possible_color_pairs(combined):
+        for color_name in _find_color_names(color_text):
+            key = (part, color_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                {
+                    "part": part,
+                    "color": color_name,
+                    "hex": COLOR_NAME_TO_HEX[color_name],
+                    "source": f"{part}: {color_text}",
+                }
+            )
+
+    if items:
+        return items[:8]
+
+    # Fallback: show any colors found in the text as fleet/brand color chips.
+    for color_name in _find_color_names(combined):
+        key = ("fleet", color_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "part": "fleet",
+                "color": color_name,
+                "hex": COLOR_NAME_TO_HEX[color_name],
+                "source": combined,
+            }
+        )
+
+    return items[:8]
+
+
+def render_color_chips_html(
+    color_scheme: object,
+    color_confidence: object = 0.0,
+    color_evidence_note: object = "",
+    *,
+    compact: bool = True,
+) -> str:
+    items = parse_color_items(color_scheme, color_evidence_note)
+    raw_scheme = _plain_text(color_scheme, max_len=360)
+    raw_note = _plain_text(color_evidence_note, max_len=360)
+
+    if not items:
+        return (
+            '<div class="color-cell color-empty">'
+            '<span class="unknown-dot"></span>'
+            '<span>Unknown</span>'
+            f'{_confidence_pill(color_confidence, "")}'
+            '</div>'
+        )
+
+    chips: list[str] = []
+    for item in items:
+        part = html.escape(item["part"])
+        color = html.escape(item["color"])
+        hex_value = html.escape(item["hex"], quote=True)
+        title = html.escape(f"{item['part']} - {item['color']} | {raw_scheme}", quote=True)
+
+        # White and very light colors need a visible border.
+        extra_style = "border:1px solid rgba(15,23,42,0.35);" if item["color"] in {"white", "silver", "yellow"} else ""
+
+        label = part if compact else f"{part} · {color}"
+        chips.append(
+            '<span class="color-chip" title="{title}">'
+            '<span class="color-cube" style="background:{hex_value};{extra_style}"></span>'
+            '<span class="color-chip-label">{label}</span>'
+            '</span>'.format(
+                title=title,
+                hex_value=hex_value,
+                extra_style=extra_style,
+                label=html.escape(label),
+            )
+        )
+
+    note_html = ""
+    if raw_note and not compact:
+        note_html = f'<div class="color-note">{html.escape(raw_note)}</div>'
+
+    return (
+        '<div class="color-cell">'
+        '<div class="color-chip-row">'
+        + "".join(chips)
+        + '</div>'
+        + f'<div class="color-meta">{_confidence_pill(color_confidence, "color")} '
+        + f'<span class="color-raw" title="{html.escape(raw_scheme, quote=True)}">source</span></div>'
+        + note_html
+        + '</div>'
+    )
+
+
+def _dashboard_css() -> str:
+    return """
+    <style>
+      .crm-table-wrap { overflow-x: auto; width: 100%; border-radius: 16px; border: 1px solid rgba(148,163,184,0.22); }
+      table.crm-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 0.88rem; }
+      table.crm-table th {
+        text-align: left;
+        padding: 0.68rem 0.62rem;
+        border-bottom: 1px solid rgba(148,163,184,0.26);
+        position: sticky;
+        top: 0;
+        background: rgba(15,23,42,0.92);
+        color: white;
+        z-index: 1;
+        white-space: nowrap;
+      }
+      table.crm-table td { vertical-align: top; padding: 0.68rem 0.62rem; border-bottom: 1px solid rgba(148,163,184,0.18); }
+      table.crm-table tr:hover td { background: rgba(148,163,184,0.08); }
+      table.crm-table a { text-decoration: none; font-weight: 750; }
+      table.crm-table small { opacity: 0.72; }
+      .status-badge, .confidence-pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0.16rem 0.48rem;
+        font-size: 0.74rem;
+        font-weight: 750;
+        white-space: nowrap;
+      }
+      .status-active { background: rgba(34,197,94,0.16); color: #16A34A; border: 1px solid rgba(34,197,94,0.25); }
+      .status-acquired, .status-merged, .status-rebranded { background: rgba(59,130,246,0.16); color: #2563EB; border: 1px solid rgba(59,130,246,0.24); }
+      .status-defunct { background: rgba(239,68,68,0.14); color: #DC2626; border: 1px solid rgba(239,68,68,0.22); }
+      .status-unclear { background: rgba(245,158,11,0.16); color: #D97706; border: 1px solid rgba(245,158,11,0.24); }
+      .status-muted { background: rgba(100,116,139,0.16); color: #64748B; border: 1px solid rgba(100,116,139,0.22); }
+      .conf-high { background: rgba(34,197,94,0.14); color: #16A34A; }
+      .conf-mid { background: rgba(245,158,11,0.14); color: #D97706; }
+      .conf-low { background: rgba(100,116,139,0.14); color: #64748B; }
+      .color-cell { min-width: 160px; }
+      .color-chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.36rem; margin-bottom: 0.28rem; }
+      .color-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.32rem;
+        border: 1px solid rgba(148,163,184,0.24);
+        background: rgba(148,163,184,0.08);
+        border-radius: 999px;
+        padding: 0.18rem 0.46rem 0.18rem 0.22rem;
+        line-height: 1;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.08);
+      }
+      .color-cube {
+        width: 1.05rem;
+        height: 1.05rem;
+        border-radius: 0.28rem;
+        display: inline-block;
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.24), 0 1px 2px rgba(15,23,42,0.18);
+      }
+      .color-chip-label { font-size: 0.72rem; font-weight: 700; color: inherit; opacity: 0.86; }
+      .color-meta { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+      .color-raw { font-size: 0.72rem; opacity: 0.55; cursor: help; border-bottom: 1px dotted rgba(148,163,184,0.7); }
+      .color-note { margin-top: 0.45rem; font-size: 0.82rem; opacity: 0.75; }
+      .color-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; color: #64748B; }
+      .unknown-dot { width: 0.72rem; height: 0.72rem; border-radius: 0.22rem; display:inline-block; background: repeating-linear-gradient(45deg, #CBD5E1, #CBD5E1 3px, #F8FAFC 3px, #F8FAFC 6px); border: 1px solid rgba(100,116,139,0.35); }
+      .detail-card {
+        border: 1px solid rgba(148,163,184,0.24);
+        border-radius: 16px;
+        padding: 0.85rem;
+        background: rgba(148,163,184,0.06);
+      }
+    </style>
+    """
+
+
 def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
     st.subheader("CRM table")
-    st.caption("Company names are clickable when a website URL is available.")
+    st.caption("Company names are clickable when a website URL is available. Crane colors are shown as swatches; hover over them to see the raw source text.")
 
     if df.empty:
         st.info("No rows match the current filters.")
@@ -362,31 +709,29 @@ def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
 
     rows = []
     for _, row in df.head(max_rows).iterrows():
-        confidence = f"{float(row.get('status_confidence', 0.0)):.0%}"
-        contact_conf = f"{float(row.get('contact_confidence', 0.0)):.0%}"
-        color_conf = f"{float(row.get('color_confidence', 0.0)):.0%}"
+        confidence = _confidence_pill(row.get("status_confidence", 0.0))
+        contact_conf = _confidence_pill(row.get("contact_confidence", 0.0), "contact")
+        color_html = render_color_chips_html(
+            row.get("crane_color_scheme", ""),
+            row.get("color_confidence", 0.0),
+            row.get("color_evidence_note", ""),
+            compact=True,
+        )
         rows.append(
             "<tr>"
             f"<td>{_company_anchor(row.get('company_name', ''), row.get('company_website_url', ''))}</td>"
-            f"<td>{_safe_cell(row.get('ai_status', ''))}</td>"
-            f"<td>{html.escape(confidence)}</td>"
+            f"<td>{_status_badge(row.get('ai_status', ''))}</td>"
+            f"<td>{confidence}</td>"
             f"<td>{_safe_cell(row.get('market_role', ''))}</td>"
             f"<td>{_safe_cell(row.get('crane_capacity_range', ''), 120)}</td>"
-            f"<td>{_safe_cell(row.get('responsible_sales_contacts', ''), 260)}<br><small>contact confidence: {html.escape(contact_conf)}</small></td>"
-            f"<td>{_safe_cell(row.get('crane_color_scheme', ''), 160)}<br><small>color confidence: {html.escape(color_conf)}</small></td>"
+            f"<td>{_safe_cell(row.get('responsible_sales_contacts', ''), 260)}<br>{contact_conf}</td>"
+            f"<td>{color_html}</td>"
             f"<td>{_safe_cell(row.get('summary', ''), 320)}</td>"
             "</tr>"
         )
 
     table_html = f"""
-    <style>
-      .crm-table-wrap {{ overflow-x: auto; width: 100%; }}
-      table.crm-table {{ border-collapse: collapse; width: 100%; font-size: 0.88rem; }}
-      table.crm-table th {{ text-align: left; padding: 0.55rem; border-bottom: 1px solid #ddd; position: sticky; top: 0; background: var(--background-color, black); }}
-      table.crm-table td {{ vertical-align: top; padding: 0.55rem; border-bottom: 1px solid rgba(128,128,128,0.25); }}
-      table.crm-table a {{ text-decoration: none; font-weight: 650; }}
-      table.crm-table small {{ opacity: 0.72; }}
-    </style>
+    {_dashboard_css()}
     <div class="crm-table-wrap">
       <table class="crm-table">
         <thead>
@@ -411,7 +756,6 @@ def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
 
     if len(df) > max_rows:
         st.info(f"Showing first {max_rows} of {len(df)} matching rows. Increase the table row limit in the sidebar if needed.")
-
 
 def render_metrics(df: pd.DataFrame) -> None:
     total = len(df)
@@ -494,10 +838,23 @@ def render_detail_panel(df: pd.DataFrame) -> None:
 
     with color_col:
         st.write("**Crane colors**")
-        st.write(row.get("crane_color_scheme", ""))
-        st.caption(
-            f"confidence: {float(row.get('color_confidence', 0.0)):.0%} · {row.get('color_evidence_note', '')}"
+        st.markdown(
+            _dashboard_css()
+            + '<div class="detail-card">'
+            + render_color_chips_html(
+                row.get("crane_color_scheme", ""),
+                row.get("color_confidence", 0.0),
+                row.get("color_evidence_note", ""),
+                compact=False,
+            )
+            + '</div>',
+            unsafe_allow_html=True,
         )
+        with st.expander("Raw color text", expanded=False):
+            st.write(row.get("crane_color_scheme", ""))
+            st.caption(
+                f"confidence: {float(row.get('color_confidence', 0.0)):.0%} · {row.get('color_evidence_note', '')}"
+            )
 
     with st.expander("Legacy CRM data", expanded=False):
         st.write("**Emails:**", row.get("emails", ""))
