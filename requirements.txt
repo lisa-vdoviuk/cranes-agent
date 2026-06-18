@@ -1,7 +1,7 @@
 pandas
 openpyxl
 
-groq
+ollama
 python-dotenv
 pydantic
 tenacity

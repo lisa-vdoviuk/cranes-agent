@@ -6,9 +6,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 try:
-    from groq import Groq
-except ImportError:  # pragma: no cover - allows dashboard/tests without Groq installed
-    Groq = None  # type: ignore[assignment]
+    from ollama import Client as OllamaClient
+except ImportError:  # pragma: no cover
+    OllamaClient = None  # type: ignore[assignment]
 from pydantic import ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -205,7 +205,7 @@ def _compact_record(company_record: dict[str, Any], settings: Settings) -> dict[
         "top_tags": truncate_text(str(company_record.get("top_tags", "") or ""), 180),
         "legacy_info": truncate_text(str(company_record.get("legacy_info", "") or ""), 350),
         "existing_web": company_record.get("existing_web", ""),
-        "original_notes": truncate_text(str(company_record.get("original_notes", "") or ""), settings.groq_record_notes_chars),
+        "original_notes": truncate_text(str(company_record.get("original_notes", "") or ""), settings.ollama_record_notes_chars),
     }
 
 
@@ -215,8 +215,8 @@ def _build_user_prompt(
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> str:
-    selected_results = sorted(search_results, key=lambda item: item.relevance_score, reverse=True)[: settings.groq_max_search_items]
-    selected_pages = scraped_pages[: settings.groq_max_pages]
+    selected_results = sorted(search_results, key=lambda item: item.relevance_score, reverse=True)[: settings.ollama_max_search_items]
+    selected_pages = scraped_pages[: settings.ollama_max_pages]
 
     search_payload = [
         {
@@ -233,7 +233,7 @@ def _build_user_prompt(
         {
             "title": page.title,
             "url": page.url,
-            "text_excerpt": truncate_text(page.text, settings.groq_page_excerpt_chars),
+            "text_excerpt": truncate_text(page.text, settings.ollama_page_excerpt_chars),
         }
         for page in selected_pages
     ]
@@ -286,13 +286,13 @@ def _llm_cache_key(model: str, system_prompt: str, user_prompt: str) -> str:
 
 
 def _load_llm_cache(settings: Settings) -> dict[str, Any]:
-    if not settings.groq_cache_enabled:
+    if not settings.ollama_cache_enabled:
         return {}
     return read_json(settings.llm_cache_path, default={})
 
 
 def _save_llm_cache(settings: Settings, cache: dict[str, Any]) -> None:
-    if settings.groq_cache_enabled:
+    if settings.ollama_cache_enabled:
         write_json(settings.llm_cache_path, cache)
 
 
@@ -375,13 +375,13 @@ def _heuristic_enrichment(
     )
 
 
-def _should_skip_groq_low_evidence(
+def _should_skip_ollama_low_evidence(
     company_record: dict[str, Any],
     search_results: list[SearchResult],
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> bool:
-    if not settings.groq_skip_low_evidence:
+    if not settings.ollama_skip_low_evidence:
         return False
     counts = _relevant_evidence_counts(company_record, search_results, scraped_pages)
     if counts["direct_domain_hits"] == 0 and counts["company_text_hits"] == 0:
@@ -397,7 +397,7 @@ def _should_use_confident_heuristic(
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> bool:
-    if not settings.groq_skip_confident_heuristics:
+    if not settings.ollama_skip_confident_heuristics:
         return False
     counts = _relevant_evidence_counts(company_record, search_results, scraped_pages)
     return counts["strong_page_hits"] > 0 and counts["direct_domain_hits"] > 0
@@ -407,27 +407,26 @@ def _should_use_confident_heuristic(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=3, max=20),
 )
-def _call_groq_json(
+def _call_ollama_json(
     client: Any,
     model: str,
     system_prompt: str,
     user_prompt: str,
     max_tokens: int,
 ) -> dict[str, Any]:
-    completion = client.chat.completions.create(
+    completion = client.chat(
         model=model,
-        temperature=0,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
+        format="json",
+        stream=False,
     )
 
-    content = completion.choices[0].message.content
+    content = completion.get("message", {}).get("content", "")
     if not content:
-        raise ValueError("Groq returned an empty response.")
+        raise ValueError("Ollama returned an empty response.")
 
     return json.loads(content)
 
@@ -540,17 +539,17 @@ def enrich_company_with_llm(
             [],
         )
 
-    if not settings.groq_enabled:
+    if not settings.ollama_enabled:
         return _postprocess_enrichment(
-            _heuristic_enrichment(company_record, search_results, scraped_pages, "Groq disabled by GROQ_ENABLED=false."),
+            _heuristic_enrichment(company_record, search_results, scraped_pages, "Ollama disabled by OLLAMA_ENABLED=false."),
             company_record,
             search_results,
             scraped_pages,
         )
 
-    if _should_skip_groq_low_evidence(company_record, search_results, scraped_pages, settings):
+    if _should_skip_ollama_low_evidence(company_record, search_results, scraped_pages, settings):
         return _postprocess_enrichment(
-            _heuristic_enrichment(company_record, search_results, scraped_pages, "Groq skipped: low company-specific evidence."),
+            _heuristic_enrichment(company_record, search_results, scraped_pages, "Ollama skipped: low company-specific evidence."),
             company_record,
             search_results,
             scraped_pages,
@@ -558,17 +557,17 @@ def enrich_company_with_llm(
 
     if _should_use_confident_heuristic(company_record, search_results, scraped_pages, settings):
         return _postprocess_enrichment(
-            _heuristic_enrichment(company_record, search_results, scraped_pages, "Groq skipped: strong deterministic company/domain + crane evidence."),
+            _heuristic_enrichment(company_record, search_results, scraped_pages, "Ollama skipped: strong deterministic company/domain + crane evidence."),
             company_record,
             search_results,
             scraped_pages,
         )
 
-    if Groq is None:
+    if OllamaClient is None:
         return _postprocess_enrichment(
             _fallback_enrichment(
                 search_results,
-                "The groq package is not installed. Run pip install groq or pip install -r requirements.txt.",
+                "The ollama package is not installed. Run pip install ollama or pip install -r requirements.txt.",
                 company_record,
             ),
             company_record,
@@ -577,20 +576,20 @@ def enrich_company_with_llm(
         )
 
     user_prompt = _build_user_prompt(company_record, search_results, scraped_pages, settings)
-    cache_key = _llm_cache_key(settings.groq_model, SYSTEM_PROMPT, user_prompt)
+    cache_key = _llm_cache_key(settings.ollama_model, SYSTEM_PROMPT, user_prompt)
     cache = _load_llm_cache(settings)
 
     try:
-        if settings.groq_cache_enabled and cache_key in cache:
+        if settings.ollama_cache_enabled and cache_key in cache:
             raw = cache[cache_key]
         else:
-            client = Groq(api_key=settings.groq_api_key)
-            raw = _call_groq_json(
+            client = OllamaClient(host=settings.ollama_base_url)
+            raw = _call_ollama_json(
                 client=client,
-                model=settings.groq_model,
+                model=settings.ollama_model,
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                max_tokens=settings.groq_max_tokens,
+                max_tokens=settings.ollama_max_tokens,
             )
             cache[cache_key] = raw
             _save_llm_cache(settings, cache)

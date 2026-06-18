@@ -12,17 +12,17 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
-    groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
-    groq_enabled: bool = True
-    groq_cache_enabled: bool = True
-    groq_skip_low_evidence: bool = True
-    groq_skip_confident_heuristics: bool = True
-    groq_max_search_items: int = 4
-    groq_max_pages: int = 2
-    groq_page_excerpt_chars: int = 900
-    groq_record_notes_chars: int = 400
-    groq_max_tokens: int = 700
+    ollama_model: str = "llama3.1:8b-instruct-q4_K_M"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_enabled: bool = True
+    ollama_cache_enabled: bool = True
+    ollama_skip_low_evidence: bool = True
+    ollama_skip_confident_heuristics: bool = True
+    ollama_max_search_items: int = 4
+    ollama_max_pages: int = 2
+    ollama_page_excerpt_chars: int = 900
+    ollama_record_notes_chars: int = 400
+    ollama_max_tokens: int = 700
 
     max_search_results: int = 5
     max_pages_to_scrape: int = 3
@@ -53,25 +53,20 @@ def _env_int(name: str, default: int) -> int:
 
 
 def get_settings() -> Settings:
-    groq_enabled = _env_bool("GROQ_ENABLED", True)
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if groq_enabled and not api_key:
-        raise RuntimeError(
-            "Missing GROQ_API_KEY. Add it to your .env file, or set GROQ_ENABLED=false to run heuristics only."
-        )
+    ollama_enabled = _env_bool("OLLAMA_ENABLED", True)
 
     settings = Settings(
-        groq_api_key=api_key,
-        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
-        groq_enabled=groq_enabled,
-        groq_cache_enabled=_env_bool("GROQ_CACHE_ENABLED", True),
-        groq_skip_low_evidence=_env_bool("GROQ_SKIP_LOW_EVIDENCE", True),
-        groq_skip_confident_heuristics=_env_bool("GROQ_SKIP_CONFIDENT_HEURISTICS", True),
-        groq_max_search_items=_env_int("GROQ_MAX_SEARCH_ITEMS", 4),
-        groq_max_pages=_env_int("GROQ_MAX_PAGES", 2),
-        groq_page_excerpt_chars=_env_int("GROQ_PAGE_EXCERPT_CHARS", 900),
-        groq_record_notes_chars=_env_int("GROQ_RECORD_NOTES_CHARS", 400),
-        groq_max_tokens=_env_int("GROQ_MAX_TOKENS", 700),
+        ollama_model=os.getenv("OLLAMA_MODEL", "llama3.1:8b-instruct-q4_K_M").strip(),
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip(),
+        ollama_enabled=ollama_enabled,
+        ollama_cache_enabled=_env_bool("OLLAMA_CACHE_ENABLED", True),
+        ollama_skip_low_evidence=_env_bool("OLLAMA_SKIP_LOW_EVIDENCE", True),
+        ollama_skip_confident_heuristics=_env_bool("OLLAMA_SKIP_CONFIDENT_HEURISTICS", True),
+        ollama_max_search_items=_env_int("OLLAMA_MAX_SEARCH_ITEMS", 4),
+        ollama_max_pages=_env_int("OLLAMA_MAX_PAGES", 2),
+        ollama_page_excerpt_chars=_env_int("OLLAMA_PAGE_EXCERPT_CHARS", 900),
+        ollama_record_notes_chars=_env_int("OLLAMA_RECORD_NOTES_CHARS", 400),
+        ollama_max_tokens=_env_int("OLLAMA_MAX_TOKENS", 700),
         max_search_results=_env_int("MAX_SEARCH_RESULTS", 5),
         max_pages_to_scrape=_env_int("MAX_PAGES_TO_SCRAPE", 3),
         request_timeout_seconds=_env_int("REQUEST_TIMEOUT_SECONDS", 15),
