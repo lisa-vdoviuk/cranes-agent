@@ -1,5 +1,23 @@
 from __future__ import annotations
 
+"""
+llm_ollama.py — Text-LLM enrichment via local Ollama.
+
+Replaces the old llm_groq.py. All config keys are now provider-agnostic
+(llm_model, llm_base_url, etc.) to match the rewritten config.py.
+
+Key fixes applied:
+  - settings.groq_model AttributeError eliminated (was crashing every save).
+  - Color fields removed from the LLM prompt (handled by vision model in
+    color_inference.py). The LLM no longer wastes tokens on colour reasoning.
+  - enrichment_path recorded as a machine-readable field on every return branch.
+  - Heuristic-bypass threshold tightened: requires BOTH strong_page_hits > 1
+    AND direct_domain_hits > 0 (was > 0 for strong_page_hits, causing 85 %
+    Active inflation).
+  - Page cache uses JSON (scraper.py change); prompt uses readable indented JSON.
+  - CRANE_TERMS and constants moved to constants.py.
+"""
+
 import json
 import re
 from typing import Any
@@ -9,16 +27,23 @@ try:
     from ollama import Client as OllamaClient
 except ImportError:  # pragma: no cover
     OllamaClient = None  # type: ignore[assignment]
+
 from pydantic import ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.color_inference import infer_crane_color_scheme
 from src.config import Settings
+from src.constants import CRANE_TERMS
 from src.schemas import CompanyEnrichment, ScrapedPage, SearchResult
+from src.site_verifier import classify_url_category, resolve_official_site
 from src.utils import read_json, safe_hash, truncate_text, write_json
 
 
-SYSTEM_PROMPT = """
+# ---------------------------------------------------------------------------
+# System prompt (colour fields intentionally absent — handled by vision model)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
 You are a precise CRM and business-data enrichment analyst for the European mobile crane industry.
 Return valid JSON only.
 
@@ -27,21 +52,16 @@ Task:
 - Extract market role, best relevant URL, concise summary, capacity range/details, and likely sales/purchase contacts.
 
 Evidence rules:
-- Use only supplied evidence.
-- A URL is relevant only if it directly mentions the target company, is the company's own domain, or is a company-specific profile.
+- Use only the supplied evidence — do not invent facts.
+- A URL is relevant only if it directly mentions the target company, is the company's own domain,
+  or is a company-specific profile.
 - Do not use generic crane-market pages, manufacturer pages, or pages about other companies as verified_url.
-- If evidence is weak/unrelated, use Unclear and confidence <= 0.45.
-- If there is company-specific crane/heavy-lifting evidence, Active can be 0.70-0.95.
-- If no relevant evidence URL exists, verified_url must be empty.
-- Do not invent capacities or job roles. Legacy workbook contacts are CRM contacts unless website evidence proves a sales role.
+- If evidence is weak or unrelated, use Unclear and confidence <= 0.45.
+- If there is company-specific crane/heavy-lifting evidence, Active confidence may reach 0.70-0.95.
+- If no relevant evidence URL exists, verified_url must be an empty string.
+- Do not invent crane capacities or job roles.
+- Legacy workbook contacts are valid CRM contacts unless website evidence proves a different sales role.\
 """
-
-
-CRANE_TERMS = [
-    "mobilkran", "autokran", "kranverleih", "kran", "crane", "mobile crane",
-    "crawler crane", "liebherr", "grove", "demag", "tadano", "faun", "sennebogen",
-    "lifting", "heavy transport", "schwertransport", "arbeitsbühne", "hebebühne",
-]
 
 CAPACITY_PATTERN = re.compile(
     r"(?:\b\d{1,4}(?:[.,]\d+)?\s*(?:-|–|—|bis|to)\s*\d{1,4}(?:[.,]\d+)?\s*(?:t|to\.?|tons?|tonnes?|tonnen)\b)"
@@ -51,10 +71,9 @@ CAPACITY_PATTERN = re.compile(
 )
 
 
-# ----------------------------
+# ---------------------------------------------------------------------------
 # Evidence diagnostics
-# ----------------------------
-
+# ---------------------------------------------------------------------------
 
 def _company_tokens(company_name: str) -> list[str]:
     stopwords = {
@@ -62,7 +81,7 @@ def _company_tokens(company_name: str) -> list[str]:
         "und", "and", "the", "germany", "alemania", "company", "firma",
     }
     tokens = re.split(r"[^a-z0-9äöüß]+", str(company_name).lower())
-    return [token for token in tokens if len(token) >= 3 and token not in stopwords]
+    return [t for t in tokens if len(t) >= 3 and t not in stopwords]
 
 
 def _domain(url: str) -> str:
@@ -73,8 +92,8 @@ def _domain(url: str) -> str:
 
 
 def _allowed_urls(search_results: list[SearchResult], scraped_pages: list[ScrapedPage]) -> set[str]:
-    urls = {result.url for result in search_results if result.url}
-    urls.update(page.url for page in scraped_pages if page.url)
+    urls = {r.url for r in search_results if r.url}
+    urls.update(p.url for p in scraped_pages if p.url)
     return urls
 
 
@@ -96,23 +115,28 @@ def _relevant_evidence_counts(
     for page in scraped_pages:
         page_domain = _domain(page.url)
         haystack = f"{page.title} {page.url} {page.text}".lower()
-        is_direct_domain = bool(existing_domain and (page_domain == existing_domain or page_domain.endswith("." + existing_domain)))
-        has_company = any(token in haystack for token in tokens)
+        is_direct = bool(
+            existing_domain and (
+                page_domain == existing_domain
+                or page_domain.endswith("." + existing_domain)
+            )
+        )
+        has_company = any(tok in haystack for tok in tokens)
         has_crane = any(term in haystack for term in CRANE_TERMS)
-        if is_direct_domain:
+        if is_direct:
             direct_domain_hits += 1
         if has_company:
             company_text_hits += 1
         if has_crane:
             crane_context_hits += 1
-        if has_crane and (is_direct_domain or has_company):
+        if has_crane and (is_direct or has_company):
             strong_page_hits += 1
 
     for result in search_results:
         if result.source_type in {"legacy_url", "email_domain"}:
             direct_domain_hits += 1
         haystack = f"{result.title} {result.url} {result.snippet}".lower()
-        if any(token in haystack for token in tokens):
+        if any(tok in haystack for tok in tokens):
             company_text_hits += 1
         if any(term in haystack for term in CRANE_TERMS):
             crane_context_hits += 1
@@ -125,15 +149,17 @@ def _relevant_evidence_counts(
     }
 
 
-def _capacity_hints(search_results: list[SearchResult], scraped_pages: list[ScrapedPage], limit: int = 6) -> list[str]:
+def _capacity_hints(
+    search_results: list[SearchResult],
+    scraped_pages: list[ScrapedPage],
+    limit: int = 6,
+) -> list[str]:
     hints: list[str] = []
     sources: list[tuple[str, str]] = []
-
-    for result in search_results:
-        sources.append((result.url, f"{result.title}. {result.snippet}"))
-    for page in scraped_pages:
-        sources.append((page.url, f"{page.title}. {page.text}"))
-
+    for r in search_results:
+        sources.append((r.url, f"{r.title}. {r.snippet}"))
+    for p in scraped_pages:
+        sources.append((p.url, f"{p.title}. {p.text}"))
     for url, text in sources:
         for match in CAPACITY_PATTERN.finditer(text):
             value = re.sub(r"\s+", " ", match.group(0)).strip()
@@ -162,38 +188,41 @@ def _legacy_contact_string(company_record: dict[str, Any]) -> str:
 def _direct_or_verified_url(search_results: list[SearchResult], preferred: str = "") -> str:
     if preferred:
         return preferred
-    for result in search_results:
-        if result.source_type in {"legacy_url", "email_domain"} and result.url:
-            return result.url
-    for result in search_results:
-        if result.url:
-            return result.url
+    for r in search_results:
+        if r.source_type in {"legacy_url", "email_domain"} and r.url:
+            return r.url
+    for r in search_results:
+        if r.url:
+            return r.url
     return ""
 
 
 def _market_role_from_text(text: str) -> str:
     lowered = text.lower()
-    if any(term in lowered for term in ["manufacturer", "hersteller", "manufactures", "produces", "entwickelt und fertigt"]):
+    if any(t in lowered for t in ["manufacturer", "hersteller", "manufactures", "produces", "entwickelt und fertigt"]):
         return "Manufacturer"
-    if any(term in lowered for term in ["kranverleih", "vermietung", "mieten", "rental", "rent", "hire"]):
+    if any(t in lowered for t in ["kranverleih", "vermietung", "mieten", "rental", "rent", "hire"]):
         return "Rental Company"
-    if any(term in lowered for term in ["used crane", "gebrauchtkran", "verkauf", "sales", "dealer", "handel", "trading"]):
+    if any(t in lowered for t in ["used crane", "gebrauchtkran", "verkauf", "sales", "dealer", "handel", "trading"]):
         return "Dealer"
-    if any(term in lowered for term in ["service", "maintenance", "wartung", "reparatur"]):
+    if any(t in lowered for t in ["service", "maintenance", "wartung", "reparatur"]):
         return "Service Provider"
     return "Unknown"
 
 
-def _combined_evidence_text(search_results: list[SearchResult], scraped_pages: list[ScrapedPage], max_chars: int = 6000) -> str:
+def _combined_evidence_text(
+    search_results: list[SearchResult],
+    scraped_pages: list[ScrapedPage],
+    max_chars: int = 6000,
+) -> str:
     pieces = [f"{r.title}. {r.snippet}" for r in search_results[:8]]
     pieces.extend(f"{p.title}. {p.text}" for p in scraped_pages[:4])
     return truncate_text(" ".join(pieces), max_chars)
 
 
-# ----------------------------
-# Prompt construction / cache
-# ----------------------------
-
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
 
 def _compact_record(company_record: dict[str, Any], settings: Settings) -> dict[str, Any]:
     return {
@@ -205,7 +234,10 @@ def _compact_record(company_record: dict[str, Any], settings: Settings) -> dict[
         "top_tags": truncate_text(str(company_record.get("top_tags", "") or ""), 180),
         "legacy_info": truncate_text(str(company_record.get("legacy_info", "") or ""), 350),
         "existing_web": company_record.get("existing_web", ""),
-        "original_notes": truncate_text(str(company_record.get("original_notes", "") or ""), settings.ollama_record_notes_chars),
+        "original_notes": truncate_text(
+            str(company_record.get("original_notes", "") or ""),
+            settings.llm_record_notes_chars,
+        ),
     }
 
 
@@ -215,32 +247,37 @@ def _build_user_prompt(
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> str:
-    selected_results = sorted(search_results, key=lambda item: item.relevance_score, reverse=True)[: settings.ollama_max_search_items]
-    selected_pages = scraped_pages[: settings.ollama_max_pages]
+    selected_results = sorted(
+        search_results, key=lambda r: r.relevance_score, reverse=True
+    )[: settings.llm_max_search_items]
+    selected_pages = scraped_pages[: settings.llm_max_pages]
 
     search_payload = [
         {
-            "title": result.title,
-            "url": result.url,
-            "snippet": truncate_text(result.snippet, 500),
-            "source_type": result.source_type,
-            "relevance_score": result.relevance_score,
+            "title": r.title,
+            "url": r.url,
+            "snippet": truncate_text(r.snippet, 500),
+            "source_type": r.source_type,
+            "relevance_score": r.relevance_score,
         }
-        for result in selected_results
+        for r in selected_results
     ]
 
     page_payload = [
         {
-            "title": page.title,
-            "url": page.url,
-            "text_excerpt": truncate_text(page.text, settings.ollama_page_excerpt_chars),
+            "title": p.title,
+            "url": p.url,
+            "text_excerpt": truncate_text(p.text, settings.llm_page_excerpt_chars),
         }
-        for page in selected_pages
+        for p in selected_pages
     ]
 
-    evidence_diagnostics = _relevant_evidence_counts(company_record, selected_results, selected_pages)
+    evidence_diagnostics = _relevant_evidence_counts(
+        company_record, selected_results, selected_pages
+    )
     capacity_hints = _capacity_hints(selected_results, selected_pages, limit=5)
 
+    # Colour fields are intentionally absent — they are handled by the vision model.
     schema_hint = {
         "ai_status": "Active | Acquired | Defunct | Merged | Rebranded | Unclear | Not Relevant",
         "status_confidence": "number 0..1",
@@ -255,51 +292,46 @@ def _build_user_prompt(
         "responsible_sales_contacts": "names/roles/emails/phones useful for crane buying/selling enquiries",
         "contact_confidence": "number 0..1",
         "contact_source": "website | legacy_workbook | both | none",
-        "crane_color_scheme": "Unknown",
-        "color_confidence": 0,
-        "color_evidence_note": "Color handled by deterministic parser outside Groq.",
     }
 
-    return f"""
-Legacy company record:
-{json.dumps(_compact_record(company_record, settings), ensure_ascii=False, separators=(",", ":"))}
+    return (
+        "Legacy company record:\n"
+        + json.dumps(_compact_record(company_record, settings), ensure_ascii=False, indent=2)
+        + "\n\nEvidence diagnostics:\n"
+        + json.dumps(evidence_diagnostics, ensure_ascii=False, indent=2)
+        + "\n\nCapacity hints:\n"
+        + json.dumps(capacity_hints, ensure_ascii=False, indent=2)
+        + "\n\nSearch/direct candidates:\n"
+        + json.dumps(search_payload, ensure_ascii=False, indent=2)
+        + "\n\nScraped page excerpts:\n"
+        + json.dumps(page_payload, ensure_ascii=False, indent=2)
+        + "\n\nReturn JSON using this exact shape:\n"
+        + json.dumps(schema_hint, ensure_ascii=False, indent=2)
+    )
 
-Evidence diagnostics:
-{json.dumps(evidence_diagnostics, ensure_ascii=False, separators=(",", ":"))}
 
-Capacity hints:
-{json.dumps(capacity_hints, ensure_ascii=False, separators=(",", ":"))}
-
-Search/direct candidates:
-{json.dumps(search_payload, ensure_ascii=False, separators=(",", ":"))}
-
-Scraped page excerpts:
-{json.dumps(page_payload, ensure_ascii=False, separators=(",", ":"))}
-
-Return JSON using this exact shape:
-{json.dumps(schema_hint, ensure_ascii=False, separators=(",", ":"))}
-"""
-
+# ---------------------------------------------------------------------------
+# LLM cache
+# ---------------------------------------------------------------------------
 
 def _llm_cache_key(model: str, system_prompt: str, user_prompt: str) -> str:
-    return f"v5-token-opt::{model}::{safe_hash(system_prompt + user_prompt)}"
+    return f"v6-ollama::{model}::{safe_hash(system_prompt + user_prompt)}"
 
 
 def _load_llm_cache(settings: Settings) -> dict[str, Any]:
-    if not settings.ollama_cache_enabled:
+    if not settings.llm_cache_enabled:
         return {}
     return read_json(settings.llm_cache_path, default={})
 
 
 def _save_llm_cache(settings: Settings, cache: dict[str, Any]) -> None:
-    if settings.ollama_cache_enabled:
+    if settings.llm_cache_enabled:
         write_json(settings.llm_cache_path, cache)
 
 
-# ----------------------------
-# Fallbacks / deterministic paths
-# ----------------------------
-
+# ---------------------------------------------------------------------------
+# Fallback / heuristic enrichment
+# ---------------------------------------------------------------------------
 
 def _fallback_enrichment(
     search_results: list[SearchResult],
@@ -308,8 +340,8 @@ def _fallback_enrichment(
 ) -> CompanyEnrichment:
     company_record = company_record or {}
     evidence_urls = [
-        result.url for result in search_results
-        if result.source_type in {"legacy_url", "email_domain"} and result.url
+        r.url for r in search_results
+        if r.source_type in {"legacy_url", "email_domain"} and r.url
     ][:3]
     legacy_contacts = _legacy_contact_string(company_record)
     return CompanyEnrichment(
@@ -320,15 +352,20 @@ def _fallback_enrichment(
         summary="The automated enrichment could not produce a reliable classification.",
         evidence_urls=evidence_urls,
         reasoning_note=message,
-        company_website_url=evidence_urls[0] if evidence_urls else "",
-        crane_capacity_range="Unknown",
+        company_website_url=evidence_urls[0] if evidence_urls else "",        official_website_confidence=0.0,
+        site_status="no_official_site",
+        site_rejection_reason=message,
+        profile_urls=[],
+        rejected_urls=[],
+        official_site_debug="fallback",        crane_capacity_range="Unknown",
         crane_capacity_details="",
         responsible_sales_contacts=legacy_contacts,
         contact_confidence=0.35 if legacy_contacts else 0.0,
         contact_source="legacy_workbook" if legacy_contacts else "none",
         crane_color_scheme="Unknown",
         color_confidence=0.0,
-        color_evidence_note="No reliable color evidence was available.",
+        color_evidence_note="Color analysis not available (fallback path).",
+        enrichment_path="fallback",
     )
 
 
@@ -342,18 +379,29 @@ def _heuristic_enrichment(
     combined = _combined_evidence_text(search_results, scraped_pages)
     capacity = _capacity_hints(search_results, scraped_pages, limit=3)
     legacy_contacts = _legacy_contact_string(company_record)
-    evidence_urls = [page.url for page in scraped_pages[:3] if page.url]
+    evidence_urls = [p.url for p in scraped_pages[:3] if p.url]
     if not evidence_urls:
-        evidence_urls = [result.url for result in search_results if result.source_type in {"legacy_url", "email_domain"} and result.url][:3]
+        evidence_urls = [
+            r.url for r in search_results
+            if r.source_type in {"legacy_url", "email_domain"} and r.url
+        ][:3]
 
-    if counts["strong_page_hits"] > 0:
+    # Tightened threshold vs. old code: require > 1 strong_page_hits to reach Active
+    # without LLM confirmation. The old "> 0" was causing ~85 % Active inflation.
+    if counts["strong_page_hits"] > 1:
         status = "Active"
         confidence = 0.72
-        summary = "Company-specific web evidence indicates activity in cranes, heavy lifting, or related equipment. Groq was skipped to save tokens."
+        summary = (
+            "Multiple company-specific pages with crane/heavy-lifting evidence found. "
+            "LLM skipped (strong deterministic signal)."
+        )
     else:
         status = "Unclear"
         confidence = 0.25 if counts["direct_domain_hits"] else 0.0
-        summary = "Company-specific evidence was too weak for a reliable automated classification. Groq was skipped to save tokens."
+        summary = (
+            "Company-specific evidence was insufficient for reliable automated classification. "
+            "LLM skipped."
+        )
 
     return CompanyEnrichment(
         ai_status=status,
@@ -363,7 +411,15 @@ def _heuristic_enrichment(
         summary=summary,
         evidence_urls=evidence_urls if status == "Active" else [],
         reasoning_note=reason,
-        company_website_url=_direct_or_verified_url(search_results, evidence_urls[0] if evidence_urls else ""),
+        company_website_url=_direct_or_verified_url(
+            search_results, evidence_urls[0] if evidence_urls else ""
+        ),
+        official_website_confidence=0.0,
+        site_status="",
+        site_rejection_reason="",
+        profile_urls=[],
+        rejected_urls=[],
+        official_site_debug="",
         crane_capacity_range=capacity[0].split(" — ", 1)[0] if capacity else "Unknown",
         crane_capacity_details=" | ".join(capacity),
         responsible_sales_contacts=legacy_contacts,
@@ -371,17 +427,18 @@ def _heuristic_enrichment(
         contact_source="legacy_workbook" if legacy_contacts else "none",
         crane_color_scheme="Unknown",
         color_confidence=0.0,
-        color_evidence_note="Color handled by deterministic parser after classification.",
+        color_evidence_note="Color will be analysed by vision model post-classification.",
+        enrichment_path="heuristic",
     )
 
 
-def _should_skip_ollama_low_evidence(
+def _should_skip_llm_low_evidence(
     company_record: dict[str, Any],
     search_results: list[SearchResult],
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> bool:
-    if not settings.ollama_skip_low_evidence:
+    if not settings.llm_skip_low_evidence:
         return False
     counts = _relevant_evidence_counts(company_record, search_results, scraped_pages)
     if counts["direct_domain_hits"] == 0 and counts["company_text_hits"] == 0:
@@ -397,11 +454,16 @@ def _should_use_confident_heuristic(
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> bool:
-    if not settings.ollama_skip_confident_heuristics:
+    if not settings.llm_skip_confident_heuristics:
         return False
     counts = _relevant_evidence_counts(company_record, search_results, scraped_pages)
-    return counts["strong_page_hits"] > 0 and counts["direct_domain_hits"] > 0
+    # Tightened: require BOTH > 1 strong page hits AND a direct domain hit.
+    return counts["strong_page_hits"] > 1 and counts["direct_domain_hits"] > 0
 
+
+# ---------------------------------------------------------------------------
+# Ollama call
+# ---------------------------------------------------------------------------
 
 @retry(
     stop=stop_after_attempt(3),
@@ -423,11 +485,9 @@ def _call_ollama_json(
         format="json",
         stream=False,
     )
-
     content = completion.get("message", {}).get("content", "")
     if not content:
         raise ValueError("Ollama returned an empty response.")
-
     return json.loads(content)
 
 
@@ -435,38 +495,67 @@ def _sanitize_raw_response(raw: dict[str, Any]) -> dict[str, Any]:
     raw = dict(raw or {})
     string_keys = [
         "verified_url", "summary", "reasoning_note", "company_website_url",
-        "crane_capacity_range", "crane_capacity_details", "responsible_sales_contacts",
-        "contact_source", "crane_color_scheme", "color_evidence_note",
+        "crane_capacity_range", "crane_capacity_details",
+        "responsible_sales_contacts", "contact_source",
     ]
     for key in string_keys:
         if raw.get(key) is None:
             raw[key] = ""
     if raw.get("evidence_urls") is None:
         raw["evidence_urls"] = []
+    # Colour fields are set later by the vision pipeline — default them here.
+    raw.setdefault("crane_color_scheme", "Unknown")
+    raw.setdefault("color_confidence", 0.0)
+    raw.setdefault("color_evidence_note", "")
+    raw.setdefault("official_website_confidence", 0.0)
+    raw.setdefault("site_status", "")
+    raw.setdefault("site_rejection_reason", "")
+    raw.setdefault("profile_urls", [])
+    raw.setdefault("rejected_urls", [])
+    raw.setdefault("official_site_debug", "")
+    raw.setdefault("enrichment_path", "llm")
     return raw
 
 
-def _apply_deterministic_color(
+# ---------------------------------------------------------------------------
+# Post-processing
+# ---------------------------------------------------------------------------
+
+def _apply_vision_color(
     enrichment: CompanyEnrichment,
     company_record: dict[str, Any],
     search_results: list[SearchResult],
     scraped_pages: list[ScrapedPage],
+    settings: Settings,
 ) -> CompanyEnrichment:
+    """Run the vision + text color pipeline and attach results to enrichment."""
     if enrichment.ai_status == "Not Relevant":
         enrichment.crane_color_scheme = "Unknown"
         enrichment.color_confidence = 0.0
-        enrichment.color_evidence_note = "Company was classified as not relevant to crane/heavy-lifting activity."
+        enrichment.color_evidence_note = (
+            "Company classified as Not Relevant to crane/heavy-lifting activity."
+        )
         return enrichment
 
-    inferred = infer_crane_color_scheme(company_record, search_results, scraped_pages)
-    if inferred.scheme.lower() != "unknown":
-        enrichment.crane_color_scheme = inferred.scheme
-        enrichment.color_confidence = inferred.confidence
-        enrichment.color_evidence_note = inferred.note
-    else:
+    # Only run vision color inference for Active/credible companies.
+    if enrichment.ai_status == "Unclear" and enrichment.status_confidence < 0.5:
         enrichment.crane_color_scheme = "Unknown"
         enrichment.color_confidence = 0.0
-        enrichment.color_evidence_note = inferred.note
+        enrichment.color_evidence_note = (
+            "Color analysis skipped: status confidence too low for reliable inference."
+        )
+        return enrichment
+
+    inferred = infer_crane_color_scheme(
+        company_record=company_record,
+        search_results=search_results,
+        scraped_pages=scraped_pages,
+        settings=settings,
+    )
+
+    enrichment.crane_color_scheme = inferred.scheme
+    enrichment.color_confidence = inferred.confidence
+    enrichment.color_evidence_note = inferred.note
     return enrichment
 
 
@@ -475,22 +564,41 @@ def _postprocess_enrichment(
     company_record: dict[str, Any],
     search_results: list[SearchResult],
     scraped_pages: list[ScrapedPage],
+    settings: Settings,
 ) -> CompanyEnrichment:
     allowed = _allowed_urls(search_results, scraped_pages)
     relevant_counts = _relevant_evidence_counts(company_record, search_results, scraped_pages)
 
-    enrichment.evidence_urls = [url for url in enrichment.evidence_urls if url in allowed]
+    enrichment.evidence_urls = [u for u in enrichment.evidence_urls if u in allowed]
 
     if enrichment.verified_url and enrichment.verified_url not in allowed:
         enrichment.verified_url = ""
-
     if not enrichment.verified_url and enrichment.evidence_urls:
         enrichment.verified_url = enrichment.evidence_urls[0]
 
     if enrichment.company_website_url and enrichment.company_website_url not in allowed:
         enrichment.company_website_url = ""
     if not enrichment.company_website_url:
-        enrichment.company_website_url = _direct_or_verified_url(search_results, enrichment.verified_url)
+        enrichment.company_website_url = _direct_or_verified_url(
+            search_results, enrichment.verified_url
+        )
+
+    site_resolution = resolve_official_site(
+        company_record=company_record,
+        search_results=search_results,
+        scraped_pages=scraped_pages,
+        min_official_score=float(getattr(settings, "site_min_official_score", 60)),
+        official_site_required=getattr(settings, "official_site_required", True),
+        allow_profile_as_verified_url=getattr(settings, "allow_profile_as_verified_url", False),
+        max_profile_evidence_urls=getattr(settings, "max_profile_evidence_urls", 2),
+    )
+    enrichment.company_website_url = site_resolution.best_url or ""
+    enrichment.official_website_confidence = site_resolution.confidence
+    enrichment.site_status = site_resolution.status
+    enrichment.site_rejection_reason = site_resolution.rejection_reason
+    enrichment.profile_urls = site_resolution.profile_urls
+    enrichment.rejected_urls = site_resolution.rejected_urls
+    enrichment.official_site_debug = site_resolution.debug
 
     if relevant_counts["direct_domain_hits"] == 0 and relevant_counts["company_text_hits"] == 0:
         enrichment.ai_status = "Unclear"
@@ -515,15 +623,16 @@ def _postprocess_enrichment(
         enrichment.contact_confidence = max(float(enrichment.contact_confidence), 0.35)
         enrichment.contact_source = "legacy_workbook"
     elif enrichment.responsible_sales_contacts and not enrichment.contact_source:
-        enrichment.contact_source = "website" if enrichment.contact_confidence >= 0.55 else "legacy_workbook"
+        enrichment.contact_source = (
+            "website" if enrichment.contact_confidence >= 0.55 else "legacy_workbook"
+        )
 
-    return _apply_deterministic_color(enrichment, company_record, search_results, scraped_pages)
+    return _apply_vision_color(enrichment, company_record, search_results, scraped_pages, settings)
 
 
-# ----------------------------
+# ---------------------------------------------------------------------------
 # Public API
-# ----------------------------
-
+# ---------------------------------------------------------------------------
 
 def enrich_company_with_llm(
     company_record: dict[str, Any],
@@ -531,76 +640,80 @@ def enrich_company_with_llm(
     scraped_pages: list[ScrapedPage],
     settings: Settings,
 ) -> CompanyEnrichment:
+    """
+    Enrich a single company record using the local Ollama text LLM.
+    Color analysis is performed by the vision model (LLaVA) in _postprocess_enrichment.
+    """
     if not search_results and not scraped_pages:
         return _postprocess_enrichment(
             _fallback_enrichment([], "No web evidence was found.", company_record),
-            company_record,
-            [],
-            [],
+            company_record, [], [], settings,
         )
 
-    if not settings.ollama_enabled:
+    if not settings.llm_enabled:
         return _postprocess_enrichment(
-            _heuristic_enrichment(company_record, search_results, scraped_pages, "Ollama disabled by OLLAMA_ENABLED=false."),
-            company_record,
-            search_results,
-            scraped_pages,
+            _heuristic_enrichment(
+                company_record, search_results, scraped_pages,
+                "LLM disabled by LLM_ENABLED=false.",
+            ),
+            company_record, search_results, scraped_pages, settings,
         )
 
-    if _should_skip_ollama_low_evidence(company_record, search_results, scraped_pages, settings):
+    if _should_skip_llm_low_evidence(company_record, search_results, scraped_pages, settings):
         return _postprocess_enrichment(
-            _heuristic_enrichment(company_record, search_results, scraped_pages, "Ollama skipped: low company-specific evidence."),
-            company_record,
-            search_results,
-            scraped_pages,
+            _heuristic_enrichment(
+                company_record, search_results, scraped_pages,
+                "LLM skipped: insufficient company-specific evidence.",
+            ),
+            company_record, search_results, scraped_pages, settings,
         )
 
     if _should_use_confident_heuristic(company_record, search_results, scraped_pages, settings):
         return _postprocess_enrichment(
-            _heuristic_enrichment(company_record, search_results, scraped_pages, "Ollama skipped: strong deterministic company/domain + crane evidence."),
-            company_record,
-            search_results,
-            scraped_pages,
+            _heuristic_enrichment(
+                company_record, search_results, scraped_pages,
+                "LLM skipped: strong deterministic company+domain+crane evidence (>1 strong page hits).",
+            ),
+            company_record, search_results, scraped_pages, settings,
         )
 
     if OllamaClient is None:
         return _postprocess_enrichment(
             _fallback_enrichment(
                 search_results,
-                "The ollama package is not installed. Run pip install ollama or pip install -r requirements.txt.",
+                "ollama package not installed. Run: pip install ollama",
                 company_record,
             ),
-            company_record,
-            search_results,
-            scraped_pages,
+            company_record, search_results, scraped_pages, settings,
         )
 
     user_prompt = _build_user_prompt(company_record, search_results, scraped_pages, settings)
-    cache_key = _llm_cache_key(settings.ollama_model, SYSTEM_PROMPT, user_prompt)
+    cache_key = _llm_cache_key(settings.llm_model, SYSTEM_PROMPT, user_prompt)
     cache = _load_llm_cache(settings)
 
     try:
-        if settings.ollama_cache_enabled and cache_key in cache:
+        if settings.llm_cache_enabled and cache_key in cache:
             raw = cache[cache_key]
         else:
-            client = OllamaClient(host=settings.ollama_base_url)
+            client = OllamaClient(host=settings.llm_base_url)
             raw = _call_ollama_json(
                 client=client,
-                model=settings.ollama_model,
+                model=settings.llm_model,
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                max_tokens=settings.ollama_max_tokens,
+                max_tokens=settings.llm_max_tokens,
             )
             cache[cache_key] = raw
             _save_llm_cache(settings, cache)
 
         raw = _sanitize_raw_response(raw)
+        raw["enrichment_path"] = "llm"
         enrichment = CompanyEnrichment.model_validate(raw)
 
         if not enrichment.evidence_urls:
-            enrichment.evidence_urls = [page.url for page in scraped_pages] or [
-                result.url for result in search_results
-                if result.source_type in {"legacy_url", "email_domain"}
+            enrichment.evidence_urls = [p.url for p in scraped_pages] or [
+                r.url for r in search_results
+                if r.source_type in {"legacy_url", "email_domain"}
             ][:3]
 
         return _postprocess_enrichment(
@@ -608,6 +721,7 @@ def enrich_company_with_llm(
             company_record=company_record,
             search_results=search_results,
             scraped_pages=scraped_pages,
+            settings=settings,
         )
 
     except (ValidationError, json.JSONDecodeError, ValueError) as exc:
@@ -617,7 +731,5 @@ def enrich_company_with_llm(
                 message=f"LLM response could not be validated: {exc}",
                 company_record=company_record,
             ),
-            company_record,
-            search_results,
-            scraped_pages,
+            company_record, search_results, scraped_pages, settings,
         )

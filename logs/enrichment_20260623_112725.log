@@ -1,0 +1,60 @@
+2026-06-23 11:27:25 | INFO     | Logging started. File: logs\enrichment_20260623_112725.log
+2026-06-23 11:27:25 | INFO     | Loading workbook: .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 11:27:40 | INFO     | Loaded 2 company records from .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 11:27:40 | INFO     | Country filter: PAIS contains 'Alemania'
+2026-06-23 11:27:40 | INFO     | Runtime settings:
+2026-06-23 11:27:40 | INFO     |   LLM_ENABLED=True
+2026-06-23 11:27:40 | INFO     |   LLM_MODEL=llama3.1:8b-instruct-q4_K_M
+2026-06-23 11:27:40 | INFO     |   LLM_BASE_URL=http://localhost:11434
+2026-06-23 11:27:40 | INFO     |   VISION_ENABLED=True
+2026-06-23 11:27:40 | INFO     |   VISION_MODEL=llava:7b
+2026-06-23 11:27:40 | INFO     |   MAX_SEARCH_RESULTS=5
+2026-06-23 11:27:40 | INFO     |   MAX_PAGES_TO_SCRAPE=3
+2026-06-23 11:27:40 | INFO     |   LLM_SKIP_LOW_EVIDENCE=True
+2026-06-23 11:27:40 | INFO     |   LLM_SKIP_CONFIDENT_HEURISTICS=True
+2026-06-23 11:27:42 | INFO     | Ollama preflight:
+2026-06-23 11:27:42 | INFO     |   package_installed=True
+2026-06-23 11:27:42 | INFO     |   server_reachable=True
+2026-06-23 11:27:42 | INFO     |   base_url=http://localhost:11434
+2026-06-23 11:27:42 | INFO     |   available_models=llama3.2:3b, phi:latest
+2026-06-23 11:27:42 | INFO     |   requested_text_model=llama3.1:8b-instruct-q4_K_M available=False
+2026-06-23 11:27:42 | INFO     |   requested_vision_model=llava:7b available=False
+2026-06-23 11:27:42 | WARNING  | Ollama is not fully available. Runtime overrides applied: {'llm_enabled': False, 'vision_enabled': False}
+2026-06-23 11:27:42 | WARNING  | This run will continue, but rows may be heuristic/fallback instead of LLM/vision.
+2026-06-23 11:27:42 | INFO     | Effective runtime settings after Ollama preflight:
+2026-06-23 11:27:42 | INFO     | Runtime settings:
+2026-06-23 11:27:42 | INFO     |   LLM_ENABLED=False
+2026-06-23 11:27:42 | INFO     |   LLM_MODEL=llama3.1:8b-instruct-q4_K_M
+2026-06-23 11:27:42 | INFO     |   LLM_BASE_URL=http://localhost:11434
+2026-06-23 11:27:42 | INFO     |   VISION_ENABLED=False
+2026-06-23 11:27:42 | INFO     |   VISION_MODEL=llava:7b
+2026-06-23 11:27:42 | INFO     |   MAX_SEARCH_RESULTS=5
+2026-06-23 11:27:42 | INFO     |   MAX_PAGES_TO_SCRAPE=3
+2026-06-23 11:27:42 | INFO     |   LLM_SKIP_LOW_EVIDENCE=True
+2026-06-23 11:27:42 | INFO     |   LLM_SKIP_CONFIDENT_HEURISTICS=True
+2026-06-23 11:27:42 | INFO     | Starting enrichment for 2 input company records.
+2026-06-23 11:27:42 | INFO     | Resume=True; already completed=0; output=data\output\enriched_companies.csv
+2026-06-23 11:27:42 | INFO     | [1/2] Enriching: Crane4U / Alemania
+2026-06-23 11:27:42 | INFO     |   Search/direct candidates: 8
+2026-06-23 11:27:42 | INFO     |     search[1] score=6.5 type=search url=https://web2.cylex.de/firma-home/crane4u-13724363.html title=CRANE4U ▷ in Nidda
+2026-06-23 11:27:42 | INFO     |     search[2] score=6.5 type=search url=https://www.glassdoor.de/Überblick/Arbeit-bei-crane4u-EI_IE3150321.11,18.htm title=crane4u Karriere: Arbeiten bei crane4u | Glassdoor
+2026-06-23 11:27:42 | INFO     |     search[3] score=6.5 type=search url=https://www.crane4u.de/photo-gallery title=www.crane4u.com - Photo Gallery
+2026-06-23 11:27:42 | INFO     |     search[4] score=6.5 type=search url=https://branchenbuch.meinestadt.de/nidda/company/11852599 title=Geong Sook Schramm-Kim Crane4U in Nidda 63667 | Kurstr. 15 | meinestadt.de | Telefonnummer | Adresse
+2026-06-23 11:27:42 | INFO     |     search[5] score=6.5 type=search url=https://firmeneintrag.creditreform.de/63667/6110442142/GEONG_SOOK_SCHRAMM_KIM_CRANE4U title=Geong Sook Schramm-Kim "Crane4U", Nidda | Firmenauskunft
+2026-06-23 11:28:44 | INFO     |   Scraped pages: 2
+2026-06-23 11:28:44 | INFO     |     page[1] url=https://branchenbuch.meinestadt.de/nidda chars=585 crane_images=1 title=Branchenbuch Nidda | Firmen in der Nähe | Online Adresse finden
+2026-06-23 11:28:44 | INFO     |     page[2] url=https://www.infobel.com/Landing/Abuse chars=4999 crane_images=0 title=CRANE4U, Nidda, DE | Unternehmensinformationen
+2026-06-23 11:28:44 | INFO     |   RESULT path=heuristic status=Unclear conf=0% role=Rental Company capacity=Unknown color=Unknown color_conf=0%
+2026-06-23 11:28:44 | INFO     |   RESULT website=https://branchenbuch.meinestadt.de/nidda verified=
+2026-06-23 11:28:44 | INFO     |   RESULT reason=LLM disabled by LLM_ENABLED=false.
+2026-06-23 11:28:44 | INFO     |   RESULT color_note=Color analysis skipped: status confidence too low for reliable inference.
+2026-06-23 11:28:44 | WARNING  |   OLLAMA-DOWN explanation: LLM was enabled in config, but text model was unavailable. This row could not use Ollama text classification. reason=model 'llama3.1:8b-instruct-q4_K_M' unavailable
+2026-06-23 11:28:44 | WARNING  |   OLLAMA-DOWN explanation: Vision was enabled in config, but vision model was unavailable. Crane colors may stay Unknown. reason=model 'llava:7b' unavailable
+2026-06-23 11:28:44 | INFO     |   Saved -> data\output\enriched_companies.csv
+2026-06-23 11:28:44 | INFO     | [2/2] Enriching: alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG / Alemania
+2026-06-23 11:28:44 | INFO     |   Search/direct candidates: 8
+2026-06-23 11:28:44 | INFO     |     search[1] score=12.5 type=search url=https://alga.de/en/company/branches title=Branches - alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:28:44 | INFO     |     search[2] score=12.5 type=search url=https://alga.de/fahrzeugsuche/ title=Fahrzeugsuche - alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:28:44 | INFO     |     search[3] score=12.5 type=search url=https://alga.de/en/ title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:28:44 | INFO     |     search[4] score=12.5 type=search url=https://alga.de/fzgnummer-suche_SI85381.html title=Fahrzeugsuche - alga Nutzfahrzeug- und Baumaschinen GmbH ...
+2026-06-23 11:28:44 | INFO     |     search[5] score=12.5 type=search url=https://alga.de/impressum title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG

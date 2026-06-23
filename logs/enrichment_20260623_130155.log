@@ -1,0 +1,25 @@
+2026-06-23 13:01:55 | INFO     | Logging started. File: logs\enrichment_20260623_130155.log
+2026-06-23 13:01:55 | INFO     | Loading workbook: .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 13:02:08 | INFO     | Loaded 4 company records from .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 13:02:08 | INFO     | Country filter: PAIS contains 'Alemania'
+2026-06-23 13:02:08 | INFO     | Runtime settings:
+2026-06-23 13:02:08 | INFO     |   LLM_ENABLED=True
+2026-06-23 13:02:08 | INFO     |   LLM_MODEL=llama3.1:8b-instruct-q4_K_M
+2026-06-23 13:02:08 | INFO     |   LLM_BASE_URL=http://localhost:11434
+2026-06-23 13:02:08 | INFO     |   VISION_ENABLED=True
+2026-06-23 13:02:08 | INFO     |   VISION_MODEL=llava:7b
+2026-06-23 13:02:08 | INFO     |   MAX_SEARCH_RESULTS=5
+2026-06-23 13:02:08 | INFO     |   MAX_PAGES_TO_SCRAPE=3
+2026-06-23 13:02:08 | INFO     |   LLM_SKIP_LOW_EVIDENCE=True
+2026-06-23 13:02:08 | INFO     |   LLM_SKIP_CONFIDENT_HEURISTICS=True
+2026-06-23 13:02:08 | INFO     |   OFFICIAL_SITE_REQUIRED=True
+2026-06-23 13:02:08 | INFO     |   SITE_MIN_OFFICIAL_SCORE=60
+2026-06-23 13:02:08 | INFO     |   ALLOW_PROFILE_AS_VERIFIED_URL=False
+2026-06-23 13:02:12 | INFO     | Ollama preflight:
+2026-06-23 13:02:12 | INFO     |   package_installed=True
+2026-06-23 13:02:12 | INFO     |   server_reachable=False
+2026-06-23 13:02:12 | INFO     |   base_url=http://localhost:11434
+2026-06-23 13:02:12 | WARNING  |   available_models=<none>
+2026-06-23 13:02:12 | INFO     |   requested_text_model=llama3.1:8b-instruct-q4_K_M available=False
+2026-06-23 13:02:12 | INFO     |   requested_vision_model=llava:7b available=False
+2026-06-23 13:02:12 | WARNING  |   health_error=Cannot reach Ollama at http://localhost:11434/api/tags: HTTPConnectionPool(host='localhost', port=11434): Max retries exceeded with url: /api/tags (Caused by NewConnectionError("HTTPConnection(host='localhost', port=11434): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it"))

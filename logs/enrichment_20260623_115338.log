@@ -1,0 +1,90 @@
+2026-06-23 11:53:38 | INFO     | Logging started. File: logs\enrichment_20260623_115338.log
+2026-06-23 11:53:38 | INFO     | Loading workbook: .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 11:53:49 | INFO     | Loaded 4 company records from .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 11:53:49 | INFO     | Country filter: PAIS contains 'Alemania'
+2026-06-23 11:53:49 | INFO     | Runtime settings:
+2026-06-23 11:53:49 | INFO     |   LLM_ENABLED=True
+2026-06-23 11:53:49 | INFO     |   LLM_MODEL=llama3.1:8b-instruct-q4_K_M
+2026-06-23 11:53:49 | INFO     |   LLM_BASE_URL=http://localhost:11434
+2026-06-23 11:53:49 | INFO     |   VISION_ENABLED=True
+2026-06-23 11:53:49 | INFO     |   VISION_MODEL=llava:7b
+2026-06-23 11:53:49 | INFO     |   MAX_SEARCH_RESULTS=5
+2026-06-23 11:53:49 | INFO     |   MAX_PAGES_TO_SCRAPE=3
+2026-06-23 11:53:49 | INFO     |   LLM_SKIP_LOW_EVIDENCE=True
+2026-06-23 11:53:49 | INFO     |   LLM_SKIP_CONFIDENT_HEURISTICS=True
+2026-06-23 11:53:51 | INFO     | Ollama preflight:
+2026-06-23 11:53:51 | INFO     |   package_installed=True
+2026-06-23 11:53:51 | INFO     |   server_reachable=True
+2026-06-23 11:53:51 | INFO     |   base_url=http://localhost:11434
+2026-06-23 11:53:51 | INFO     |   available_models=llama3.1:8b-instruct-q4_K_M, llava:7b, phi:latest
+2026-06-23 11:53:51 | INFO     |   requested_text_model=llama3.1:8b-instruct-q4_K_M available=True
+2026-06-23 11:53:51 | INFO     |   requested_vision_model=llava:7b available=True
+2026-06-23 11:53:51 | INFO     | Ollama is available for all enabled local-model features.
+2026-06-23 11:53:51 | INFO     | Starting enrichment for 4 input company records.
+2026-06-23 11:53:51 | INFO     | Resume=True; already completed=0; output=data\output\enriched_companies.csv
+2026-06-23 11:53:51 | INFO     | [1/4] Enriching: Crane4U / Alemania
+2026-06-23 11:53:51 | INFO     |   Search/direct candidates: 8
+2026-06-23 11:53:51 | INFO     |     search[1] score=6.5 type=search url=https://web2.cylex.de/firma-home/crane4u-13724363.html title=CRANE4U ▷ in Nidda
+2026-06-23 11:53:51 | INFO     |     search[2] score=6.5 type=search url=https://www.glassdoor.de/Überblick/Arbeit-bei-crane4u-EI_IE3150321.11,18.htm title=crane4u Karriere: Arbeiten bei crane4u | Glassdoor
+2026-06-23 11:53:51 | INFO     |     search[3] score=6.5 type=search url=https://www.crane4u.de/photo-gallery title=www.crane4u.com - Photo Gallery
+2026-06-23 11:53:51 | INFO     |     search[4] score=6.5 type=search url=https://branchenbuch.meinestadt.de/nidda/company/11852599 title=Geong Sook Schramm-Kim Crane4U in Nidda 63667 | Kurstr. 15 | meinestadt.de | Telefonnummer | Adresse
+2026-06-23 11:53:51 | INFO     |     search[5] score=6.5 type=search url=https://firmeneintrag.creditreform.de/63667/6110442142/GEONG_SOOK_SCHRAMM_KIM_CRANE4U title=Geong Sook Schramm-Kim "Crane4U", Nidda | Firmenauskunft
+2026-06-23 11:54:25 | INFO     |   Scraped pages: 2
+2026-06-23 11:54:25 | INFO     |     page[1] url=https://branchenbuch.meinestadt.de/nidda chars=585 crane_images=1 title=Branchenbuch Nidda | Firmen in der Nähe | Online Adresse finden
+2026-06-23 11:54:25 | INFO     |     page[2] url=https://www.infobel.com/Landing/Abuse chars=4999 crane_images=0 title=CRANE4U, Nidda, DE | Unternehmensinformationen
+2026-06-23 11:57:48 | INFO     |   RESULT path=fallback status=Unclear conf=0% role=Unknown capacity=Unknown color=Unknown color_conf=0%
+2026-06-23 11:57:48 | INFO     |   RESULT website=https://web2.cylex.de/firma-home/crane4u-13724363.html verified=
+2026-06-23 11:57:48 | INFO     |   RESULT reason=LLM response could not be validated: 1 validation error for CompanyEnrichment
+market_role
+  Input should be 'Manufacturer', 'Dealer', 'Rental Company', 'Service Provider', 'Parts Supplier', 'Parent Company' or 'Unknown' [type=literal_error, input_value='Dealer/Rental Company', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/literal_error
+2026-06-23 11:57:48 | INFO     |   RESULT color_note=Color analysis skipped: status confidence too low for reliable inference.
+2026-06-23 11:57:48 | INFO     |   Saved -> data\output\enriched_companies.csv
+2026-06-23 11:57:48 | INFO     | [2/4] Enriching: alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG / Alemania
+2026-06-23 11:57:48 | INFO     |   Search/direct candidates: 8
+2026-06-23 11:57:48 | INFO     |     search[1] score=12.5 type=search url=https://alga.de/en/company/branches title=Branches - alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:57:48 | INFO     |     search[2] score=12.5 type=search url=https://alga.de/fahrzeugsuche/ title=Fahrzeugsuche - alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:57:48 | INFO     |     search[3] score=12.5 type=search url=https://alga.de/en/ title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:57:48 | INFO     |     search[4] score=12.5 type=search url=https://alga.de/fzgnummer-suche_SI85381.html title=Fahrzeugsuche - alga Nutzfahrzeug- und Baumaschinen GmbH ...
+2026-06-23 11:57:48 | INFO     |     search[5] score=12.5 type=search url=https://alga.de/impressum title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:58:04 | INFO     |   Scraped pages: 3
+2026-06-23 11:58:04 | INFO     |     page[1] url=https://alga.de/ chars=1879 crane_images=6 title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:58:04 | INFO     |     page[2] url=https://alga.de/ chars=1879 crane_images=6 title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:58:04 | INFO     |     page[3] url=https://alga.de/en/ chars=1403 crane_images=5 title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 12:00:59 | INFO     |   RESULT path=fallback status=Unclear conf=25% role=Unknown capacity=Unknown color=Unknown color_conf=0%
+2026-06-23 12:00:59 | INFO     |   RESULT website=https://alga.de/en/company/branches verified=
+2026-06-23 12:00:59 | INFO     |   RESULT reason=LLM response could not be validated: 1 validation error for CompanyEnrichment
+market_role
+  Input should be 'Manufacturer', 'Dealer', 'Rental Company', 'Service Provider', 'Parts Supplier', 'Parent Company' or 'Unknown' [type=literal_error, input_value='Dealer/Manufacturer', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.13/v/literal_error
+2026-06-23 12:00:59 | INFO     |   RESULT color_note=Color analysis skipped: status confidence too low for reliable inference.
+2026-06-23 12:00:59 | INFO     |   Saved -> data\output\enriched_companies.csv
+2026-06-23 12:00:59 | INFO     | [3/4] Enriching: COTRACO GERMANY / Alemania
+2026-06-23 12:00:59 | INFO     |   Search/direct candidates: 2
+2026-06-23 12:00:59 | INFO     |     search[1] score=6.5 type=search url=https://www.exporters.sg/showroom.asp?co_id=44195 title=All Products offered by COTRACO GERMANY - Exporters.SG
+2026-06-23 12:00:59 | INFO     |     search[2] score=6.5 type=search url=https://www.exporthub.com/germany/metallic-minerals-manufacturers/ title=Metallic Minerals Price in Germany - Metallic Minerals... | ExportHub.com
+2026-06-23 12:01:05 | INFO     |   Scraped pages: 2
+2026-06-23 12:01:05 | INFO     |     page[1] url=https://www.exporters.sg/ chars=701 crane_images=0 title=Exporters.SG - Source Globally, Sell Globally
+2026-06-23 12:01:05 | INFO     |     page[2] url=https://www.exporthub.com/germany/metallic-minerals-manufacturers/ chars=1094 crane_images=1 title=Metallic Minerals Price in Germany - Metallic Minerals Manufacturers & Suppliers | ExportHub.com
+2026-06-23 12:04:51 | INFO     |   RESULT path=llm status=Active conf=70% role=Manufacturer capacity=Unknown color=typical Liebherr mobile crane livery: boom/main - yellow; counterweight/undercarriage - black or grey color_conf=28%
+2026-06-23 12:04:51 | INFO     |   RESULT website=https://www.exporters.sg/showroom.asp?co_id=44195 verified=https://www.exporters.sg/showroom.asp?co_id=44195
+2026-06-23 12:04:51 | INFO     |   RESULT reason=The company has a direct mention on Exporters.SG and is listed as a manufacturer in the search results.
+2026-06-23 12:04:51 | INFO     |   RESULT color_note=Tentative manufacturer livery inferred from Liebherr/LTM text — not a verified fleet photograph.
+2026-06-23 12:04:51 | INFO     |   Saved -> data\output\enriched_companies.csv
+2026-06-23 12:04:51 | INFO     | [4/4] Enriching: Global Trading / Alemania
+2026-06-23 12:04:51 | INFO     |   Search/direct candidates: 8
+2026-06-23 12:04:51 | INFO     |     search[1] score=8.0 type=search url=https://www.autoscout24.de/haendler/gs-global-trading?srsltid=AfmBOorKswD9fCoz_ODPizp7PX7uei9iuckFGppk59WKtI5Yffu66UbO title=Aktuelle Fahrzeuge von GS Global Trading in Düsseldorf
+2026-06-23 12:04:51 | INFO     |     search[2] score=8.0 type=search url=https://home.mobile.de/GSGLOBALTRADING title=GS Global Trading in Düsseldorf - Mobile.de
+2026-06-23 12:04:51 | INFO     |     search[3] score=8.0 type=search url=https://www.northdata.de/Global+Trading+GmbH,+Köln/HRB+68080 title=Global Trading GmbH, Köln, Amtsgericht Köln HRB 68080
+2026-06-23 12:04:51 | INFO     |     search[4] score=8.0 type=search url=https://gtc-web.de/ title=GTC - Global Trading Concepts
+2026-06-23 12:04:51 | INFO     |     search[5] score=8.0 type=search url=https://bega-gruppe.de/project/bega-global/ title=BEGA Global
+2026-06-23 12:05:00 | INFO     |   Scraped pages: 3
+2026-06-23 12:05:00 | INFO     |     page[1] url=https://www.autoscout24.de/haendler/gs-global-trading?srsltid=AfmBOorKswD9fCoz_ODPizp7PX7uei9iuckFGppk59WKtI5Yffu66UbO chars=1231 crane_images=0 title=Aktuelle Fahrzeuge von GS Global Trading in Düsseldorf | AutoScout24
+2026-06-23 12:05:00 | INFO     |     page[2] url=https://www.northdata.de/Global+Trading+GmbH,+K%C3%B6ln/HRB+68080 chars=1015 crane_images=1 title=Global Trading GmbH, Köln, Amtsgericht Köln HRB 68080: Netzwerk, Wirtschaftsinfos
+2026-06-23 12:05:00 | INFO     |     page[3] url=https://gtc-web.de/ chars=5001 crane_images=0 title=GTC - Global Trading Concepts
+2026-06-23 12:08:06 | INFO     |   RESULT path=llm status=Unclear conf=45% role=Unknown capacity=Unknown color=Unknown color_conf=0%
+2026-06-23 12:08:06 | INFO     |   RESULT website=https://www.autoscout24.de/haendler/gs-global-trading?srsltid=AfmBOorKswD9fCoz_ODPizp7PX7uei9iuckFGppk59WKtI5Yffu66UbO verified=https://www.autoscout24.de/haendler/gs-global-trading?srsltid=AfmBOorKswD9fCoz_ODPizp7PX7uei9iuckFGppk59WKtI5Yffu66UbO
+2026-06-23 12:08:06 | INFO     |   RESULT reason=The provided evidence does not contain any information about crane sales, purchases, or capacities. The only relevant pages mention the company's car inventory and business registration. Without more specific crane-related data, we cannot accurately classify Global Trading's market role or status.
+2026-06-23 12:08:06 | INFO     |   RESULT color_note=Color analysis skipped: status confidence too low for reliable inference.
+2026-06-23 12:08:06 | INFO     |   Saved -> data\output\enriched_companies.csv
+2026-06-23 12:08:06 | INFO     | Finished. Total output rows: 4

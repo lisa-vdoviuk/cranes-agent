@@ -1,0 +1,32 @@
+2026-06-23 11:53:03 | INFO     | Logging started. File: logs\enrichment_20260623_115303.log
+2026-06-23 11:53:03 | INFO     | Loading workbook: .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 11:53:17 | INFO     | Loaded 2 company records from .\data\input\!E-MAIL PEDIDOS MUNDO.xlsx
+2026-06-23 11:53:17 | INFO     | Country filter: PAIS contains 'Alemania'
+2026-06-23 11:53:17 | INFO     | Runtime settings:
+2026-06-23 11:53:17 | INFO     |   LLM_ENABLED=True
+2026-06-23 11:53:17 | INFO     |   LLM_MODEL=llama3.1:8b-instruct-q4_K_M
+2026-06-23 11:53:17 | INFO     |   LLM_BASE_URL=http://localhost:11434
+2026-06-23 11:53:17 | INFO     |   VISION_ENABLED=True
+2026-06-23 11:53:17 | INFO     |   VISION_MODEL=llava:7b
+2026-06-23 11:53:17 | INFO     |   MAX_SEARCH_RESULTS=5
+2026-06-23 11:53:17 | INFO     |   MAX_PAGES_TO_SCRAPE=3
+2026-06-23 11:53:17 | INFO     |   LLM_SKIP_LOW_EVIDENCE=True
+2026-06-23 11:53:17 | INFO     |   LLM_SKIP_CONFIDENT_HEURISTICS=True
+2026-06-23 11:53:19 | INFO     | Ollama preflight:
+2026-06-23 11:53:19 | INFO     |   package_installed=True
+2026-06-23 11:53:19 | INFO     |   server_reachable=True
+2026-06-23 11:53:19 | INFO     |   base_url=http://localhost:11434
+2026-06-23 11:53:19 | INFO     |   available_models=llama3.1:8b-instruct-q4_K_M, llava:7b, phi:latest
+2026-06-23 11:53:19 | INFO     |   requested_text_model=llama3.1:8b-instruct-q4_K_M available=True
+2026-06-23 11:53:19 | INFO     |   requested_vision_model=llava:7b available=True
+2026-06-23 11:53:19 | INFO     | Ollama is available for all enabled local-model features.
+2026-06-23 11:53:19 | INFO     | Starting enrichment for 2 input company records.
+2026-06-23 11:53:19 | INFO     | Resume=True; already completed=1; output=data\output\enriched_companies.csv
+2026-06-23 11:53:19 | INFO     | [1/2] SKIP already enriched: Crane4U / Alemania
+2026-06-23 11:53:19 | INFO     | [2/2] Enriching: alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG / Alemania
+2026-06-23 11:53:19 | INFO     |   Search/direct candidates: 8
+2026-06-23 11:53:19 | INFO     |     search[1] score=12.5 type=search url=https://alga.de/en/company/branches title=Branches - alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:53:19 | INFO     |     search[2] score=12.5 type=search url=https://alga.de/fahrzeugsuche/ title=Fahrzeugsuche - alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:53:19 | INFO     |     search[3] score=12.5 type=search url=https://alga.de/en/ title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG
+2026-06-23 11:53:19 | INFO     |     search[4] score=12.5 type=search url=https://alga.de/fzgnummer-suche_SI85381.html title=Fahrzeugsuche - alga Nutzfahrzeug- und Baumaschinen GmbH ...
+2026-06-23 11:53:19 | INFO     |     search[5] score=12.5 type=search url=https://alga.de/impressum title=alga Nutzfahrzeug- und Baumaschinen GmbH & Co. KG

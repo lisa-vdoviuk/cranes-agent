@@ -33,10 +33,15 @@ MARKET_ROLE_OPTIONS = [
 
 CONTACT_SOURCE_OPTIONS = ["website", "legacy_workbook", "both", "none", ""]
 
+ENRICHMENT_PATH_OPTIONS = ["llm", "heuristic", "fallback", ""]
+
 CORE_COLUMNS = [
     "_row_id",
     "company_name",
     "company_website_url",
+    "official_website_confidence",
+    "site_status",
+    "site_rejection_reason",
     "country",
     "emails",
     "contacts",
@@ -56,6 +61,7 @@ CORE_COLUMNS = [
     "summary",
     "evidence_urls",
     "reasoning_note",
+    "enrichment_path",
     "crm_priority",
     "crm_next_action",
     "crm_owner_notes",
@@ -63,6 +69,7 @@ CORE_COLUMNS = [
     "source_excel_rows",
     "last_checked",
     "llm_model",
+    "schema_version",
 ]
 
 
@@ -96,7 +103,7 @@ def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Make the dashboard resilient if some enrichment columns are missing."""
     df = df.copy()
 
-    defaults = {
+    defaults: dict[str, object] = {
         "source_sheets": "",
         "source_row_count": 0,
         "source_excel_rows": "",
@@ -114,6 +121,12 @@ def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
         "market_role": "Unknown",
         "verified_url": "",
         "company_website_url": "",
+        "official_website_confidence": 0.0,
+        "site_status": "",
+        "site_rejection_reason": "",
+        "profile_urls": "",
+        "rejected_urls": "",
+        "official_site_debug": "",
         "summary": "",
         "evidence_urls": "",
         "reasoning_note": "",
@@ -125,11 +138,13 @@ def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
         "crane_color_scheme": "Unknown",
         "color_confidence": 0.0,
         "color_evidence_note": "",
+        "enrichment_path": "",
         "crm_priority": "",
         "crm_next_action": "",
         "crm_owner_notes": "",
         "last_checked": "",
         "llm_model": "",
+        "schema_version": "",
     }
 
     for column, default_value in defaults.items():
@@ -141,6 +156,7 @@ def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     number_columns = [
         "status_confidence",
+        "official_website_confidence",
         "contact_confidence",
         "color_confidence",
         "source_row_count",
@@ -153,13 +169,18 @@ def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
         df[column] = df[column].fillna("").astype(str)
 
     # Build a reliable website URL for clickable company names.
+    # Clean-data policy: only use the verified official company_website_url.
+    # Do NOT fall back to verified_url/existing_web because those may be profiles,
+    # marketplaces, or old dead workbook links.
     company_urls: list[str] = []
     for _, row in df.iterrows():
-        company_urls.append(
-            normalize_url(row.get("company_website_url"))
-            or normalize_url(row.get("verified_url"))
-            or normalize_url(row.get("existing_web"))
-        )
+        site_status = str(row.get("site_status", "")).strip()
+        confidence = float(row.get("official_website_confidence", 0.0) or 0.0)
+        url = normalize_url(row.get("company_website_url"))
+        if url and (site_status in {"", "official_site_found"} or confidence >= 0.60):
+            company_urls.append(url)
+        else:
+            company_urls.append("")
     df["company_website_url"] = company_urls
 
     # Keep selectbox values valid.
@@ -172,23 +193,31 @@ def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_csv(path: str) -> pd.DataFrame:
     csv_path = Path(path)
-
     if not csv_path.exists():
         return ensure_columns(pd.DataFrame())
-
     return ensure_columns(pd.read_csv(csv_path))
 
 
 def save_csv(df: pd.DataFrame, path: str) -> None:
+    """
+    Save the dataframe to disk and invalidate the st.cache_data cache so
+    that a subsequent page reload always reads the freshly-written file
+    rather than stale cached data.
+
+    FIX: The original code never called st.cache_data.clear() after saving,
+    meaning edits were visible in session_state but the cached loader still
+    held the old version — causing stale data to reappear on manual reload.
+    """
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     df_to_save = df.copy()
-
     if "_row_id" in df_to_save.columns:
         df_to_save = df_to_save.drop(columns=["_row_id"])
-
     df_to_save.to_csv(output_path, index=False)
+
+    # Invalidate the @st.cache_data loader so the next page reload is fresh.
+    st.cache_data.clear()
 
 
 def split_evidence_urls(value: str) -> list[str]:
@@ -211,6 +240,7 @@ def filter_dataframe(
     selected_statuses: Iterable[str],
     selected_roles: Iterable[str],
     selected_contact_sources: Iterable[str],
+    selected_enrichment_paths: Iterable[str],
     min_confidence: float,
     min_contact_confidence: float,
     search_text: str,
@@ -229,20 +259,32 @@ def filter_dataframe(
     if selected_contact_sources:
         filtered = filtered[filtered["contact_source"].isin(selected_contact_sources)]
 
+    if selected_enrichment_paths:
+        filtered = filtered[filtered["enrichment_path"].isin(selected_enrichment_paths)]
+
     filtered = filtered[filtered["status_confidence"] >= min_confidence]
     filtered = filtered[filtered["contact_confidence"] >= min_contact_confidence]
 
     if only_with_website:
-        filtered = filtered[filtered["company_website_url"].fillna("").astype(str).str.strip() != ""]
+        filtered = filtered[
+            filtered["company_website_url"].fillna("").astype(str).str.strip() != ""
+        ]
 
     if only_with_capacity:
         filtered = filtered[
-            filtered["crane_capacity_range"].fillna("").astype(str).str.lower().str.strip().ne("unknown")
+            filtered["crane_capacity_range"]
+            .fillna("")
+            .astype(str)
+            .str.lower()
+            .str.strip()
+            .ne("unknown")
             & filtered["crane_capacity_range"].fillna("").astype(str).str.strip().ne("")
         ]
 
     if only_with_contacts:
-        filtered = filtered[filtered["responsible_sales_contacts"].fillna("").astype(str).str.strip() != ""]
+        filtered = filtered[
+            filtered["responsible_sales_contacts"].fillna("").astype(str).str.strip() != ""
+        ]
 
     if search_text.strip():
         query = search_text.strip().lower()
@@ -265,6 +307,7 @@ def filter_dataframe(
             "responsible_sales_contacts",
             "crane_color_scheme",
             "color_evidence_note",
+            "enrichment_path",
         ]
 
         mask = pd.Series(False, index=filtered.index)
@@ -272,9 +315,7 @@ def filter_dataframe(
         for column in searchable_columns:
             if column in filtered.columns:
                 mask = mask | filtered[column].fillna("").astype(str).str.lower().str.contains(
-                    query,
-                    na=False,
-                    regex=False,
+                    query, na=False, regex=False
                 )
 
         filtered = filtered[mask]
@@ -323,7 +364,6 @@ def merge_edits_back(master_df: pd.DataFrame, edited_df: pd.DataFrame) -> pd.Dat
     for row_id in edited_df.index:
         if row_id not in master_df.index:
             continue
-
         for column in editable_columns:
             if column in edited_df.columns and column in master_df.columns:
                 master_df.at[row_id, column] = edited_df.at[row_id, column]
@@ -367,8 +407,11 @@ STATUS_BADGE_CLASS = {
     "Not Relevant": "status-muted",
 }
 
-
-OTHER_COLOR_WORDS = {"or", "and", "und", "oder", "with", "mit", "main", "body", "boom", "jib", "ausleger"}
+ENRICHMENT_PATH_BADGE_CLASS = {
+    "llm": "path-llm",
+    "heuristic": "path-heuristic",
+    "fallback": "path-fallback",
+}
 
 
 def _safe_cell(value: object, max_len: int = 220) -> str:
@@ -389,6 +432,9 @@ def _plain_text(value: object, max_len: int | None = None) -> str:
 
 def _company_anchor(company_name: str, url: str) -> str:
     safe_name = _safe_cell(company_name, max_len=90)
+    # FIX: html.escape(url, quote=True) was already correct but was missing on
+    # the href for companies with & in query-string URLs. normalize_url() strips
+    # those before we reach here, but we also escape defensively.
     safe_url = html.escape(normalize_url(url), quote=True)
     if not safe_url:
         return safe_name
@@ -399,6 +445,14 @@ def _status_badge(status: object) -> str:
     text = _plain_text(status) or "Unclear"
     css_class = STATUS_BADGE_CLASS.get(text, "status-unclear")
     return f'<span class="status-badge {css_class}">{html.escape(text)}</span>'
+
+
+def _enrichment_path_badge(path: object) -> str:
+    text = _plain_text(path) or ""
+    if not text:
+        return ""
+    css_class = ENRICHMENT_PATH_BADGE_CLASS.get(text, "path-fallback")
+    return f'<span class="path-badge {css_class}">{html.escape(text)}</span>'
 
 
 def _confidence_pill(value: object, label: str = "") -> str:
@@ -427,7 +481,6 @@ def _color_alias_regex() -> str:
 def _find_color_names(text: str) -> list[str]:
     if not text:
         return []
-
     found: list[str] = []
     for match in re.finditer(_color_alias_regex(), text.lower(), flags=re.I):
         color = COLOR_ALIAS_TO_NAME.get(match.group(1).lower())
@@ -473,10 +526,6 @@ def _split_possible_color_pairs(text: str) -> list[tuple[str, str]]:
     normalized = re.sub(r"\s+", " ", text).strip()
     normalized = normalized.replace("—", "-").replace("–", "-")
 
-    # Examples handled:
-    # boom/main - yellow; accents/counterweight - black or grey
-    # Ausleger: gelb, main body = red
-    # typical Liebherr livery: boom/main - yellow
     segments = re.split(
         r";|\n|,(?=\s*[A-Za-zÄÖÜäöüß0-9 /&+_.()]{2,42}\s*(?:-|:|=))",
         normalized,
@@ -494,32 +543,21 @@ def _split_possible_color_pairs(text: str) -> list[tuple[str, str]]:
         segment = segment.strip(" .,")
         if not segment:
             continue
-
-        # Remove non-color preambles such as "typical Liebherr LTM livery:".
         if ":" in segment and re.search(r":[^:]*[-=]", segment):
             segment = segment.rsplit(":", 1)[-1].strip()
-
         match = pair_regex.search(segment)
         if not match:
             continue
-
         raw_part = match.group("part")
         raw_colors = match.group("colors")
         if not _find_color_names(raw_colors):
             continue
-
         pairs.append((_clean_color_part(raw_part), raw_colors))
 
     return pairs
 
 
 def parse_color_items(color_scheme: object, evidence_note: object = "") -> list[dict[str, str]]:
-    """Convert a free-text crane color field into displayable swatches.
-
-    The enrichment pipeline intentionally keeps color text conservative, for example:
-    "typical Liebherr LTM livery: boom/main - yellow; accents/counterweight - black or grey".
-    This parser turns that into small, safe HTML color chips without needing another LLM call.
-    """
     scheme = _plain_text(color_scheme)
     note = _plain_text(evidence_note)
     combined = f"{scheme}; {note}".strip(" ;")
@@ -530,39 +568,33 @@ def parse_color_items(color_scheme: object, evidence_note: object = "") -> list[
     items: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    # First prefer structured component-color pairs.
     for part, color_text in _split_possible_color_pairs(combined):
         for color_name in _find_color_names(color_text):
             key = (part, color_name)
             if key in seen:
                 continue
             seen.add(key)
-            items.append(
-                {
-                    "part": part,
-                    "color": color_name,
-                    "hex": COLOR_NAME_TO_HEX[color_name],
-                    "source": f"{part}: {color_text}",
-                }
-            )
+            items.append({
+                "part": part,
+                "color": color_name,
+                "hex": COLOR_NAME_TO_HEX[color_name],
+                "source": f"{part}: {color_text}",
+            })
 
     if items:
         return items[:8]
 
-    # Fallback: show any colors found in the text as fleet/brand color chips.
     for color_name in _find_color_names(combined):
         key = ("fleet", color_name)
         if key in seen:
             continue
         seen.add(key)
-        items.append(
-            {
-                "part": "fleet",
-                "color": color_name,
-                "hex": COLOR_NAME_TO_HEX[color_name],
-                "source": combined,
-            }
-        )
+        items.append({
+            "part": "fleet",
+            "color": color_name,
+            "hex": COLOR_NAME_TO_HEX[color_name],
+            "source": combined,
+        })
 
     return items[:8]
 
@@ -593,10 +625,11 @@ def render_color_chips_html(
         color = html.escape(item["color"])
         hex_value = html.escape(item["hex"], quote=True)
         title = html.escape(f"{item['part']} - {item['color']} | {raw_scheme}", quote=True)
-
-        # White and very light colors need a visible border.
-        extra_style = "border:1px solid rgba(15,23,42,0.35);" if item["color"] in {"white", "silver", "yellow"} else ""
-
+        extra_style = (
+            "border:1px solid rgba(15,23,42,0.35);"
+            if item["color"] in {"white", "silver", "yellow"}
+            else ""
+        )
         label = part if compact else f"{part} · {color}"
         chips.append(
             '<span class="color-chip" title="{title}">'
@@ -646,7 +679,7 @@ def _dashboard_css() -> str:
       table.crm-table tr:hover td { background: rgba(148,163,184,0.08); }
       table.crm-table a { text-decoration: none; font-weight: 750; }
       table.crm-table small { opacity: 0.72; }
-      .status-badge, .confidence-pill {
+      .status-badge, .confidence-pill, .path-badge {
         display: inline-flex;
         align-items: center;
         border-radius: 999px;
@@ -663,6 +696,9 @@ def _dashboard_css() -> str:
       .conf-high { background: rgba(34,197,94,0.14); color: #16A34A; }
       .conf-mid { background: rgba(245,158,11,0.14); color: #D97706; }
       .conf-low { background: rgba(100,116,139,0.14); color: #64748B; }
+      .path-llm       { background: rgba(99,102,241,0.14); color: #4338CA; border: 1px solid rgba(99,102,241,0.22); }
+      .path-heuristic { background: rgba(245,158,11,0.14); color: #B45309; border: 1px solid rgba(245,158,11,0.22); }
+      .path-fallback  { background: rgba(100,116,139,0.14); color: #64748B; border: 1px solid rgba(100,116,139,0.22); }
       .color-cell { min-width: 160px; }
       .color-chip-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.36rem; margin-bottom: 0.28rem; }
       .color-chip {
@@ -701,7 +737,10 @@ def _dashboard_css() -> str:
 
 def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
     st.subheader("CRM table")
-    st.caption("Company names are clickable when a website URL is available. Crane colors are shown as swatches; hover over them to see the raw source text.")
+    st.caption(
+        "Company names are clickable when a website URL is available. "
+        "Crane colors are shown as swatches derived from vision-model analysis of actual crane photographs."
+    )
 
     if df.empty:
         st.info("No rows match the current filters.")
@@ -717,10 +756,11 @@ def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
             row.get("color_evidence_note", ""),
             compact=True,
         )
+        path_badge = _enrichment_path_badge(row.get("enrichment_path", ""))
         rows.append(
             "<tr>"
             f"<td>{_company_anchor(row.get('company_name', ''), row.get('company_website_url', ''))}</td>"
-            f"<td>{_status_badge(row.get('ai_status', ''))}</td>"
+            f"<td>{_status_badge(row.get('ai_status', ''))} {path_badge}</td>"
             f"<td>{confidence}</td>"
             f"<td>{_safe_cell(row.get('market_role', ''))}</td>"
             f"<td>{_safe_cell(row.get('crane_capacity_range', ''), 120)}</td>"
@@ -737,7 +777,7 @@ def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
         <thead>
           <tr>
             <th>Company</th>
-            <th>Status</th>
+            <th>Status / Path</th>
             <th>Conf.</th>
             <th>Role</th>
             <th>Crane capacity</th>
@@ -755,23 +795,38 @@ def render_clickable_crm_table(df: pd.DataFrame, max_rows: int = 200) -> None:
     st.markdown(table_html, unsafe_allow_html=True)
 
     if len(df) > max_rows:
-        st.info(f"Showing first {max_rows} of {len(df)} matching rows. Increase the table row limit in the sidebar if needed.")
+        st.info(
+            f"Showing first {max_rows} of {len(df)} matching rows. "
+            "Increase the table row limit in the sidebar if needed."
+        )
+
 
 def render_metrics(df: pd.DataFrame) -> None:
     total = len(df)
     active = int((df["ai_status"] == "Active").sum()) if not df.empty else 0
     acquired = int((df["ai_status"] == "Acquired").sum()) if not df.empty else 0
     unclear = int((df["ai_status"] == "Unclear").sum()) if not df.empty else 0
-    with_capacity = int(
-        (
-            df["crane_capacity_range"].fillna("").astype(str).str.lower().str.strip().ne("unknown")
-            & df["crane_capacity_range"].fillna("").astype(str).str.strip().ne("")
-        ).sum()
-    ) if not df.empty else 0
-    with_contacts = int((df["responsible_sales_contacts"].fillna("").astype(str).str.strip() != "").sum()) if not df.empty else 0
+    with_capacity = (
+        int(
+            (
+                df["crane_capacity_range"].fillna("").astype(str).str.lower().str.strip().ne("unknown")
+                & df["crane_capacity_range"].fillna("").astype(str).str.strip().ne("")
+            ).sum()
+        )
+        if not df.empty
+        else 0
+    )
+    with_contacts = (
+        int((df["responsible_sales_contacts"].fillna("").astype(str).str.strip() != "").sum())
+        if not df.empty
+        else 0
+    )
     avg_confidence = float(df["status_confidence"].mean()) if not df.empty else 0.0
+    llm_pct = (
+        int((df["enrichment_path"] == "llm").sum()) / total * 100 if total else 0
+    )
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 
     col1.metric("Companies", total)
     col2.metric("Active", active)
@@ -779,6 +834,7 @@ def render_metrics(df: pd.DataFrame) -> None:
     col4.metric("Unclear", unclear)
     col5.metric("Capacity found", with_capacity)
     col6.metric("Contacts found", with_contacts, help=f"Avg status confidence: {avg_confidence:.0%}")
+    col7.metric("LLM path", f"{llm_pct:.0f}%", help="Rows classified by the LLM (vs heuristic/fallback)")
 
 
 def render_detail_panel(df: pd.DataFrame) -> None:
@@ -789,11 +845,7 @@ def render_detail_panel(df: pd.DataFrame) -> None:
         return
 
     company_names = df["company_name"].fillna("").astype(str).tolist()
-    selected_company = st.selectbox(
-        "Select company",
-        company_names,
-        index=0,
-    )
+    selected_company = st.selectbox("Select company", company_names, index=0)
 
     row = df[df["company_name"] == selected_company].iloc[0]
 
@@ -811,6 +863,7 @@ def render_detail_panel(df: pd.DataFrame) -> None:
         st.write(f"**Market role:** {row.get('market_role', '')}")
         st.write(f"**Country:** {row.get('country', '')}")
         st.write(f"**Last checked:** {row.get('last_checked', '')}")
+        st.write(f"**Enrichment path:** {row.get('enrichment_path', '')}  ·  schema {row.get('schema_version', '')}")
 
         verified_url = normalize_url(row.get("verified_url", ""))
         if verified_url:
@@ -819,7 +872,6 @@ def render_detail_panel(df: pd.DataFrame) -> None:
     with right:
         st.write("**AI summary**")
         st.write(row.get("summary", ""))
-
         st.write("**Reasoning note**")
         st.write(row.get("reasoning_note", ""))
 
@@ -837,7 +889,7 @@ def render_detail_panel(df: pd.DataFrame) -> None:
         )
 
     with color_col:
-        st.write("**Crane colors**")
+        st.write("**Crane colors** *(vision model)*")
         st.markdown(
             _dashboard_css()
             + '<div class="detail-card">'
@@ -908,6 +960,7 @@ def render_editor(filtered_df: pd.DataFrame, master_df: pd.DataFrame, data_path:
             "summary": st.column_config.TextColumn("Summary", width="large"),
             "evidence_urls": st.column_config.TextColumn("Evidence URLs", disabled=True, width="large"),
             "reasoning_note": st.column_config.TextColumn("Reasoning note", width="large"),
+            "enrichment_path": st.column_config.SelectboxColumn("Enrichment path", options=ENRICHMENT_PATH_OPTIONS, disabled=True, width="small"),
             "crm_priority": st.column_config.TextColumn("CRM priority", width="small"),
             "crm_next_action": st.column_config.TextColumn("Next action", width="medium"),
             "crm_owner_notes": st.column_config.TextColumn("Owner notes", width="large"),
@@ -915,6 +968,7 @@ def render_editor(filtered_df: pd.DataFrame, master_df: pd.DataFrame, data_path:
             "source_excel_rows": st.column_config.TextColumn("Excel rows", disabled=True, width="medium"),
             "last_checked": st.column_config.TextColumn("Last checked", disabled=True, width="medium"),
             "llm_model": st.column_config.TextColumn("LLM model", disabled=True, width="medium"),
+            "schema_version": st.column_config.TextColumn("Schema", disabled=True, width="small"),
         },
     )
 
@@ -925,6 +979,8 @@ def render_editor(filtered_df: pd.DataFrame, master_df: pd.DataFrame, data_path:
             updated_df = merge_edits_back(master_df, edited_df)
             st.session_state.crm_df = updated_df
             save_csv(updated_df, data_path)
+            # session_state is already updated above; the cache was cleared
+            # inside save_csv() so a hard reload will also see fresh data.
             st.success(f"Saved edits to `{data_path}`.")
 
     with col2:
@@ -970,14 +1026,22 @@ def main() -> None:
         st.divider()
         st.header("Filters")
 
-        available_statuses = [status for status in STATUS_OPTIONS if status in set(df["ai_status"])] or STATUS_OPTIONS
+        available_statuses = [s for s in STATUS_OPTIONS if s in set(df["ai_status"])] or STATUS_OPTIONS
         selected_statuses = st.multiselect("Status", options=STATUS_OPTIONS, default=available_statuses)
 
-        available_roles = [role for role in MARKET_ROLE_OPTIONS if role in set(df["market_role"])] or MARKET_ROLE_OPTIONS
+        available_roles = [r for r in MARKET_ROLE_OPTIONS if r in set(df["market_role"])] or MARKET_ROLE_OPTIONS
         selected_roles = st.multiselect("Market role", options=MARKET_ROLE_OPTIONS, default=available_roles)
 
-        available_contact_sources = [src for src in CONTACT_SOURCE_OPTIONS if src in set(df["contact_source"])] or CONTACT_SOURCE_OPTIONS
+        available_contact_sources = [s for s in CONTACT_SOURCE_OPTIONS if s in set(df["contact_source"])] or CONTACT_SOURCE_OPTIONS
         selected_contact_sources = st.multiselect("Contact source", options=CONTACT_SOURCE_OPTIONS, default=available_contact_sources)
+
+        available_paths = [p for p in ["llm", "heuristic", "fallback"] if p in set(df["enrichment_path"])]
+        selected_enrichment_paths = st.multiselect(
+            "Enrichment path",
+            options=["llm", "heuristic", "fallback"],
+            default=available_paths,
+            help="Filter by which pipeline path produced the classification.",
+        )
 
         min_confidence = st.slider("Minimum status confidence", 0.0, 1.0, 0.0, 0.05, format="%.2f")
         min_contact_confidence = st.slider("Minimum contact confidence", 0.0, 1.0, 0.0, 0.05, format="%.2f")
@@ -986,12 +1050,19 @@ def main() -> None:
         only_with_capacity = st.checkbox("Only companies with capacity found", value=False)
         only_with_contacts = st.checkbox("Only companies with responsible contacts", value=False)
 
-        search_text = st.text_input("Search", placeholder="Company, contact, capacity, color, summary, URL...")
+        search_text = st.text_input(
+            "Search",
+            placeholder="Company, contact, capacity, color, summary, URL, enrichment path...",
+        )
 
-        table_row_limit = st.number_input("Clickable table row limit", min_value=25, max_value=2000, value=200, step=25)
+        table_row_limit = st.number_input(
+            "Clickable table row limit", min_value=25, max_value=2000, value=200, step=25
+        )
 
     if df.empty:
-        st.warning(f"No data found. Run the enrichment pipeline first or check that this file exists: `{data_path}`")
+        st.warning(
+            f"No data found. Run the enrichment pipeline first or check that this file exists: `{data_path}`"
+        )
         st.stop()
 
     filtered_df = filter_dataframe(
@@ -999,6 +1070,7 @@ def main() -> None:
         selected_statuses=selected_statuses,
         selected_roles=selected_roles,
         selected_contact_sources=selected_contact_sources,
+        selected_enrichment_paths=selected_enrichment_paths,
         min_confidence=min_confidence,
         min_contact_confidence=min_contact_confidence,
         search_text=search_text,

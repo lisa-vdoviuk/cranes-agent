@@ -5,7 +5,10 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from ddgs import DDGS
+try:
+    from ddgs import DDGS  # newer package name
+except ImportError:
+    from duckduckgo_search import DDGS  # older / pip-installed name
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import Settings

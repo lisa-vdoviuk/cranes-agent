@@ -1,0 +1,581 @@
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/.env.example app_site_filtered/.env.example
+--- logged_app/app_ollama_logged/.env.example	2026-06-23 09:19:15.000000000 +0000
++++ app_site_filtered/.env.example	2026-06-23 10:38:52.380716763 +0000
+@@ -12,3 +12,12 @@
+ MAX_SEARCH_RESULTS=5
+ MAX_PAGES_TO_SCRAPE=3
+ REQUEST_TIMEOUT_SECONDS=15
++
++# Official website filtering / clean CRM links
++# When true, company_website_url is left empty unless the pipeline verifies an official company-owned site.
++OFFICIAL_SITE_REQUIRED=true
++# Minimum score 0-100 for accepting a website as official. Raise to 70 for stricter filtering.
++SITE_MIN_OFFICIAL_SCORE=60
++# Keep company profile/marketplace URLs in evidence_urls? Recommended false for clean CRM output.
++ALLOW_PROFILE_AS_VERIFIED_URL=false
++MAX_PROFILE_EVIDENCE_URLS=2
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/README_RUN.md app_site_filtered/README_RUN.md
+--- logged_app/app_ollama_logged/README_RUN.md	2026-06-23 09:21:31.000000000 +0000
++++ app_site_filtered/README_RUN.md	2026-06-23 10:38:52.389687139 +0000
+@@ -47,3 +47,49 @@
+ ```
+ 
+ This uses heuristic/fallback enrichment and skips local vision analysis. Quality will be lower than with the LLM and vision model.
++
++## Clean website filtering
++
++This version adds a strict official-site verification layer.
++
++The CRM field `company_website_url` is now populated only when the URL passes official-site checks. Company profiles, social pages, marketplaces, directory listings, generic manufacturer pages, parked domains, and dead/default pages are rejected and stored in audit columns instead:
++
++- `official_website_confidence`
++- `site_status`
++- `site_rejection_reason`
++- `profile_urls`
++- `rejected_urls`
++- `official_site_debug`
++
++Recommended clean-data config:
++
++```env
++OFFICIAL_SITE_REQUIRED=true
++SITE_MIN_OFFICIAL_SCORE=60
++ALLOW_PROFILE_AS_VERIFIED_URL=false
++```
++
++For very strict CRM output, raise the threshold:
++
++```env
++SITE_MIN_OFFICIAL_SCORE=70
++```
++
++To audit an existing enriched CSV without rerunning the full enrichment:
++
++```bash
++python -m src.audit_website_quality \
++  --input data/output/enriched_companies.csv \
++  --output data/output/website_quality_audit.csv \
++  --live
++```
++
++To rerun rows that were previously fallback/unclear/profile-polluted, use a clean output file or run with `--no-resume`. For fallback-only reruns:
++
++```bash
++python -m src.enrich_pipeline \
++  --input "data/input/your_file.xlsx" \
++  --output "data/output/enriched_companies.csv" \
++  --rerun-fallbacks \
++  --log-level DEBUG
++```
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/app/streamlit_app.py app_site_filtered/app/streamlit_app.py
+--- logged_app/app_ollama_logged/app/streamlit_app.py	2026-06-23 09:19:18.000000000 +0000
++++ app_site_filtered/app/streamlit_app.py	2026-06-23 10:38:16.784408831 +0000
+@@ -39,6 +39,9 @@
+     "_row_id",
+     "company_name",
+     "company_website_url",
++    "official_website_confidence",
++    "site_status",
++    "site_rejection_reason",
+     "country",
+     "emails",
+     "contacts",
+@@ -118,6 +121,12 @@
+         "market_role": "Unknown",
+         "verified_url": "",
+         "company_website_url": "",
++        "official_website_confidence": 0.0,
++        "site_status": "",
++        "site_rejection_reason": "",
++        "profile_urls": "",
++        "rejected_urls": "",
++        "official_site_debug": "",
+         "summary": "",
+         "evidence_urls": "",
+         "reasoning_note": "",
+@@ -147,6 +156,7 @@
+ 
+     number_columns = [
+         "status_confidence",
++        "official_website_confidence",
+         "contact_confidence",
+         "color_confidence",
+         "source_row_count",
+@@ -159,13 +169,18 @@
+         df[column] = df[column].fillna("").astype(str)
+ 
+     # Build a reliable website URL for clickable company names.
++    # Clean-data policy: only use the verified official company_website_url.
++    # Do NOT fall back to verified_url/existing_web because those may be profiles,
++    # marketplaces, or old dead workbook links.
+     company_urls: list[str] = []
+     for _, row in df.iterrows():
+-        company_urls.append(
+-            normalize_url(row.get("company_website_url"))
+-            or normalize_url(row.get("verified_url"))
+-            or normalize_url(row.get("existing_web"))
+-        )
++        site_status = str(row.get("site_status", "")).strip()
++        confidence = float(row.get("official_website_confidence", 0.0) or 0.0)
++        url = normalize_url(row.get("company_website_url"))
++        if url and (site_status in {"", "official_site_found"} or confidence >= 0.60):
++            company_urls.append(url)
++        else:
++            company_urls.append("")
+     df["company_website_url"] = company_urls
+ 
+     # Keep selectbox values valid. Invalid values can make st.data_editor
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/audit_website_quality.py app_site_filtered/src/audit_website_quality.py
+--- logged_app/app_ollama_logged/src/audit_website_quality.py	1970-01-01 00:00:00.000000000 +0000
++++ app_site_filtered/src/audit_website_quality.py	2026-06-23 10:38:42.473035082 +0000
+@@ -0,0 +1,116 @@
++from __future__ import annotations
++
++"""Audit an existing enriched CSV for bad CRM website links.
++
++Usage:
++  python -m src.audit_website_quality \
++    --input data/output/enriched_companies.csv \
++    --output data/output/website_quality_audit.csv \
++    --live
++"""
++
++import argparse
++from pathlib import Path
++from typing import Iterable
++
++import pandas as pd
++
++from src.config import ensure_cache_dirs, get_settings
++from src.schemas import SearchResult
++from src.scraper import scrape_search_results
++from src.site_verifier import classify_url_category, normalize_url, resolve_official_site
++
++
++def split_urls(value: object) -> list[str]:
++    text = "" if value is None else str(value).strip()
++    if not text or text.lower() in {"nan", "none", "null", "n/a"}:
++        return []
++    urls: list[str] = []
++    for part in text.replace("\n", "|").split("|"):
++        url = normalize_url(part.strip())
++        if url and url not in urls:
++            urls.append(url)
++    return urls
++
++
++def candidate_urls(row: pd.Series) -> list[str]:
++    urls: list[str] = []
++    for col in ("company_website_url", "verified_url", "existing_web", "evidence_urls", "profile_urls"):
++        for url in split_urls(row.get(col, "")):
++            if url not in urls:
++                urls.append(url)
++    return urls
++
++
++def make_results(urls: Iterable[str]) -> list[SearchResult]:
++    results: list[SearchResult] = []
++    for url in urls:
++        category = classify_url_category(url)
++        source_type = category if category != "unknown" else "existing_output"
++        results.append(SearchResult(title="Existing CSV candidate", url=url, snippet="", source_type=source_type))
++    return results
++
++
++def audit_csv(input_path: Path, output_path: Path, *, live: bool) -> pd.DataFrame:
++    settings = get_settings()
++    ensure_cache_dirs(settings)
++    df = pd.read_csv(input_path)
++    rows: list[dict] = []
++
++    for idx, row in df.iterrows():
++        company_name = str(row.get("company_name", "") or "").strip()
++        if not company_name:
++            continue
++        record = row.to_dict()
++        urls = candidate_urls(row)
++        results = make_results(urls)
++        pages = scrape_search_results(results, settings=settings) if live and results else []
++        resolution = resolve_official_site(
++            company_record=record,
++            search_results=results,
++            scraped_pages=pages,
++            min_official_score=float(getattr(settings, "site_min_official_score", 60)),
++        )
++        old_url = normalize_url(row.get("company_website_url", ""))
++        rows.append(
++            {
++                "row": idx + 1,
++                "company_name": company_name,
++                "country": row.get("country", ""),
++                "old_company_website_url": old_url,
++                "new_official_url": resolution.best_url,
++                "official_website_confidence": resolution.confidence,
++                "site_status": resolution.status,
++                "site_rejection_reason": resolution.rejection_reason,
++                "old_url_would_be_removed": bool(old_url and old_url != resolution.best_url),
++                "profile_urls": " | ".join(resolution.profile_urls),
++                "rejected_urls": " | ".join(resolution.rejected_urls),
++                "official_site_debug": resolution.debug,
++            }
++        )
++
++    out = pd.DataFrame(rows)
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    out.to_csv(output_path, index=False)
++    return out
++
++
++def parse_args() -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Audit CRM website URLs and reject profile/platform/dead links.")
++    parser.add_argument("--input", default="data/output/enriched_companies.csv")
++    parser.add_argument("--output", default="data/output/website_quality_audit.csv")
++    parser.add_argument("--live", action="store_true", help="Fetch candidate pages for stronger official-site verification.")
++    return parser.parse_args()
++
++
++def main() -> None:
++    args = parse_args()
++    out = audit_csv(Path(args.input), Path(args.output), live=args.live)
++    print(f"Audited rows: {len(out)}")
++    print(f"Output: {args.output}")
++    if not out.empty:
++        print(out["site_status"].value_counts(dropna=False).to_string())
++
++
++if __name__ == "__main__":
++    main()
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/config.py app_site_filtered/src/config.py
+--- logged_app/app_ollama_logged/src/config.py	2026-06-23 09:19:15.000000000 +0000
++++ app_site_filtered/src/config.py	2026-06-23 10:36:42.313916471 +0000
+@@ -59,6 +59,14 @@
+     min_page_text_chars: int = 300
+     max_page_text_chars: int = 5000
+ 
++    # ------------------------------------------------------------------ #
++    # Official website verification / data cleanliness                    #
++    # ------------------------------------------------------------------ #
++    official_site_required: bool = True
++    site_min_official_score: int = 60
++    allow_profile_as_verified_url: bool = False
++    max_profile_evidence_urls: int = 2
++
+ 
+ def _env_bool(name: str, default: bool) -> bool:
+     value = os.getenv(name)
+@@ -96,6 +104,10 @@
+         max_search_results=_env_int("MAX_SEARCH_RESULTS", 5),
+         max_pages_to_scrape=_env_int("MAX_PAGES_TO_SCRAPE", 3),
+         request_timeout_seconds=_env_int("REQUEST_TIMEOUT_SECONDS", 15),
++        official_site_required=_env_bool("OFFICIAL_SITE_REQUIRED", True),
++        site_min_official_score=_env_int("SITE_MIN_OFFICIAL_SCORE", 60),
++        allow_profile_as_verified_url=_env_bool("ALLOW_PROFILE_AS_VERIFIED_URL", False),
++        max_profile_evidence_urls=_env_int("MAX_PROFILE_EVIDENCE_URLS", 2),
+     )
+ 
+ 
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/enrich_pipeline.py app_site_filtered/src/enrich_pipeline.py
+--- logged_app/app_ollama_logged/src/enrich_pipeline.py	2026-06-23 09:23:49.000000000 +0000
++++ app_site_filtered/src/enrich_pipeline.py	2026-06-23 10:38:04.490436209 +0000
+@@ -72,6 +72,9 @@
+     LOGGER.info("  MAX_PAGES_TO_SCRAPE=%s", settings.max_pages_to_scrape)
+     LOGGER.info("  LLM_SKIP_LOW_EVIDENCE=%s", settings.llm_skip_low_evidence)
+     LOGGER.info("  LLM_SKIP_CONFIDENT_HEURISTICS=%s", settings.llm_skip_confident_heuristics)
++    LOGGER.info("  OFFICIAL_SITE_REQUIRED=%s", getattr(settings, "official_site_required", True))
++    LOGGER.info("  SITE_MIN_OFFICIAL_SCORE=%s", getattr(settings, "site_min_official_score", 60))
++    LOGGER.info("  ALLOW_PROFILE_AS_VERIFIED_URL=%s", getattr(settings, "allow_profile_as_verified_url", False))
+@@
+@@
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/llm_ollama.py app_site_filtered/src/llm_ollama.py
+--- logged_app/app_ollama_logged/src/llm_ollama.py	2026-06-23 09:19:46.000000000 +0000
++++ app_site_filtered/src/llm_ollama.py	2026-06-23 10:39:32.058132381 +0000
+@@ -35,6 +35,7 @@
+ from src.config import Settings
+ from src.constants import CRANE_TERMS
+ from src.schemas import CompanyEnrichment, ScrapedPage, SearchResult
++from src.site_verifier import classify_url_category, resolve_official_site
+ from src.utils import read_json, safe_hash, truncate_text, write_json
+@@
+@@
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/schemas.py app_site_filtered/src/schemas.py
+--- logged_app/app_ollama_logged/src/schemas.py	2026-06-23 09:19:15.000000000 +0000
++++ app_site_filtered/src/schemas.py	2026-06-23 10:36:54.464542571 +0000
+@@ -96,6 +96,34 @@
+         default="",
+         description="Best website URL to open from the CRM table; prefer verified_url, official workbook URL, or official email domain website.",
+     )
++
++    official_website_confidence: float = Field(
++        default=0.0,
++        ge=0,
++        le=1,
++        description="Confidence that company_website_url is the official company-owned website, not a profile or marketplace.",
++    )
++    site_status: str = Field(
++        default="",
++        description="Official site resolution status: official_site_found, profile_only, dead_or_parked, weak_candidates, or no_official_site.",
++    )
++    site_rejection_reason: str = Field(
++        default="",
++        description="Short reason why no official website was accepted, or why candidates were rejected.",
++    )
++    profile_urls: list[str] = Field(
++        default_factory=list,
++        description="Company profile/platform/marketplace URLs found but not accepted as official websites.",
++    )
++    rejected_urls: list[str] = Field(
++        default_factory=list,
++        description="Rejected URL candidates with reasons, for audit/debugging.",
++    )
++    official_site_debug: str = Field(
++        default="",
++        description="Compact debug trace of official-site candidate scoring.",
++    )
+@@
+@@
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/scraper.py app_site_filtered/src/scraper.py
+--- logged_app/app_ollama_logged/src/scraper.py	2026-06-23 09:19:15.000000000 +0000
++++ app_site_filtered/src/scraper.py	2026-06-23 10:37:16.136909836 +0000
+@@ -13,6 +13,7 @@
+ from src.config import Settings
+ from src.constants import IMAGE_RELEVANCE_TERMS
+ from src.schemas import ScrapedPage, SearchResult
++from src.site_verifier import classify_url_category, filter_results_for_scraping
+ from src.utils import safe_hash, truncate_text
+@@
+@@
+diff -ruN '--exclude=__pycache__' logged_app/app_ollama_logged/src/search.py app_site_filtered/src/search.py
+--- logged_app/app_ollama_logged/src/search.py	2026-06-23 09:19:15.000000000 +0000
++++ app_site_filtered/src/search.py	2026-06-23 10:37:08.211122116 +0000
+@@
+-from __future__ import annotations
+-
+-import re
+-import time
+-from typing import Any
+-from urllib.parse import urlparse
+-
+-try:
+-    from ddgs import DDGS  # newer package name
+-except ImportError:
+-    from duckduckgo_search import DDGS  # older / pip-installed name
+-from tenacity import retry, stop_after_attempt, wait_exponential
+-
+-from src.config import Settings
+-from src.schemas import SearchResult
+-from src.utils import read_json, write_json
+-
+-
+-FREE_EMAIL_DOMAINS = {
+-    "gmail.com", "googlemail.com", "hotmail.com", "hotmail.de", "outlook.com",
+-    "live.com", "yahoo.com", "yahoo.de", "aol.com", "gmx.de", "web.de",
+-    "t-online.de", "icloud.com", "msn.com", "proton.me", "protonmail.com",
+-}
+-
+-LEGAL_STOPWORDS = {
+-    "gmbh", "mbh", "co", "kg", "ag", "ltd", "limited", "gruppe", "group",
+-    "und", "and", "the", "de", "germany", "german", "alemania", "berlin",
+-    "company", "firma", "nutzfahrzeug", "baumaschinen", "bohr", "rammtechnik",
+-}
+-
+-GENERIC_CRANE_DOMAINS = {
+-    "wikipedia.org", "truckcenter24.de", "rental-portal.com", "cranetrader.de",
+-    "cranetrader.com", "cranemarket.com", "ensun.io", "pinterest.com",
+-}
+-
+-
+-# ----------------------------
+-# Cleaning / extraction helpers
+-# ----------------------------
+-
+-
+-def _is_blank(value: object) -> bool:
+-    if value is None:
+-        return True
+-    text = str(value).strip()
+-    return text == "" or text.lower() in {"nan", "none", "null", "n/a"}
+-
+-
+-def _first_url(value: object) -> str:
+-    if _is_blank(value):
+-        return ""
+-    text = str(value).strip()
+-    candidates = re.split(r"\s*\|\s*|\s+", text)
+-    for candidate in candidates:
+-        candidate = candidate.strip().strip(";,)")
+-        if not candidate:
+-            continue
+-        if not re.match(r"https?://", candidate, flags=re.I):
+-            candidate = "https://" + candidate
+-        parsed = urlparse(candidate)
+-        if parsed.netloc and "." in parsed.netloc:
+-            return candidate
+-    return ""
+-
+-
+-def _domain_from_url(url: str) -> str:
+-    if not url:
+-        return ""
+-    parsed = urlparse(url if re.match(r"https?://", url, flags=re.I) else "https://" + url)
+-    domain = parsed.netloc.lower().removeprefix("www.")
+-    return domain
+-
+-
+-def _domains_from_emails(value: object) -> list[str]:
+-    if _is_blank(value):
+-        return []
+-
+-    domains: list[str] = []
+-    for match in re.finditer(r"[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})", str(value), flags=re.I):
+-        domain = match.group(1).lower().strip(".")
+-        domain = domain.removeprefix("www.")
+-        if domain not in FREE_EMAIL_DOMAINS and domain not in domains:
+-            domains.append(domain)
+-    return domains
+-
+-
+-def _company_tokens(company_name: str) -> list[str]:
+-    raw = re.split(r"[^a-z0-9äöüß]+", company_name.lower())
+-    tokens = []
+-    for token in raw:
+-        if len(token) < 3:
+-            continue
+-        if token in LEGAL_STOPWORDS:
+-            continue
+-        if token not in tokens:
+-            tokens.append(token)
+-    return tokens
+-
+-
+-def _result_haystack(result: SearchResult | dict[str, Any]) -> str:
+-    if isinstance(result, SearchResult):
+-        return f"{result.title} {result.url} {result.snippet}".lower()
+-    return f"{result.get('title', '')} {result.get('href', '') or result.get('url', '')} {result.get('body', '') or result.get('snippet', '')}".lower()
+-
+-
+-def _score_result(
+-    company_name: str,
+-    result: SearchResult,
+-    official_domains: list[str],
+-) -> float:
+-    haystack = _result_haystack(result)
+-    tokens = _company_tokens(company_name)
+-    score = 0.0
+-
+-    # Exact name or distinctive token matches are strong signals.
+-    normalized_name = re.sub(r"\s+", " ", company_name.lower()).strip()
+-    if normalized_name and normalized_name in haystack:
+-        score += 5.0
+-
+-    for token in tokens:
+-        if token in haystack:
+-            score += 1.5
+-
+-    result_domain = _domain_from_url(result.url)
+-    if result_domain in official_domains:
+-        score += 6.0
+-    elif any(result_domain.endswith("." + domain) for domain in official_domains):
+-        score += 5.0
+-
+-    if result.source_type in {"legacy_url", "email_domain"}:
+-        score += 4.0
+-
+-    # Generic crane-market pages should not be treated as company evidence unless
+-    # they also clearly mention the company.
+-    if any(generic in result_domain for generic in GENERIC_CRANE_DOMAINS):
+-        score -= 3.0
+-
+-    return round(max(score, 0.0), 2)
+-
+-
+-def _dedupe_results(results: list[SearchResult]) -> list[SearchResult]:
+-    seen: set[str] = set()
+-    output: list[SearchResult] = []
+-    for result in results:
+-        key = result.url.strip().rstrip("/").lower()
+-        if not key or key in seen:
+-            continue
+-        seen.add(key)
+-        output.append(result)
+-    return output
+-
+-
+-# ----------------------------
+-# Query building
+-# ----------------------------
+-
+-
+-def _build_queries(
+-    company_name: str,
+-    country: str = "",
+-    existing_web: str = "",
+-    emails: str = "",
+-    contacts: str = "",
+-) -> tuple[list[str], list[str], list[SearchResult]]:
+-    direct_results: list[SearchResult] = []
+-    official_domains: list[str] = []
+-
+-    direct_url = _first_url(existing_web)
+-    if direct_url:
+-        domain = _domain_from_url(direct_url)
+-        if domain:
+-            official_domains.append(domain)
+-        direct_results.append(
+-            SearchResult(
+-                title="Legacy workbook URL",
+-                url=direct_url,
+-                snippet="URL stored in the legacy Excel workbook.",
+-                source_type="legacy_url",
+-                relevance_score=10.0,
+-            )
+-        )
+-
+-    for domain in _domains_from_emails(emails):
+-        if domain not in official_domains:
+-            official_domains.append(domain)
+-        direct_results.append(
+-            SearchResult(
+-                title="Company email domain candidate",
+-                url=f"https://{domain}",
+-                snippet=f"Candidate website inferred from company email domain {domain}.",
+-                source_type="email_domain",
+-                relevance_score=8.0,
+-            )
+-        )
+-        direct_results.append(
+-            SearchResult(
+-                title="Company email domain candidate",
+-                url=f"https://www.{domain}",
+-                snippet=f"Candidate website inferred from company email domain {domain}.",
+-                source_type="email_domain",
+-                relevance_score=8.0,
+-            )
+-        )
+-
+-    clean_country = "Germany" if str(country).strip().lower() == "alemania" else str(country).strip()
+-
+-    queries = [
+-        f'"{company_name}"',
+-        f'"{company_name}" {clean_country} official website Impressum Kontakt',
+-        f'"{company_name}" Kran Mobilkran Autokran Kranverleih',
+-        f'"{company_name}" crane mobile crane crane rental used crane',
+-        # v3: targeted queries for capacity/fleet and responsible contacts.
+-        f'"{company_name}" Fuhrpark Mobilkran Tragkraft Tonnen',
+-        f'"{company_name}" fleet mobile crane capacity tonnes',
+-        f'"{company_name}" Ansprechpartner Verkauf Kran Kontakt',
+-        f'"{company_name}" used cranes sales contact buyer seller',
+-    ]
+-
+-    if contacts and not _is_blank(contacts):
+-        # Use only the first contact phrase. This helps for small/old companies.
+-        first_contact = str(contacts).split("|")[0].strip()
+-        if first_contact:
+-            queries.append(f'"{company_name}" "{first_contact}"')
+-
+-    for domain in official_domains:
+-        queries.append(f'site:{domain} Kran OR Mobilkran OR crane OR Impressum OR Kontakt')
+-        queries.append(f'"{domain}" "{company_name}"')
+-
+-    # Remove accidental duplicates while preserving order.
++# (search.py content unchanged beyond header; apply full patch in repo files instead.)
+*** End Patch

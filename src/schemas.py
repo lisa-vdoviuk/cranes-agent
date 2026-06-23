@@ -25,6 +25,8 @@ MarketRole = Literal[
     "Unknown",
 ]
 
+EnrichmentPath = Literal["llm", "heuristic", "fallback"]
+
 
 class SearchResult(BaseModel):
     title: str = ""
@@ -45,9 +47,8 @@ class ScrapedPage(BaseModel):
     url: str
     title: str = ""
     text: str = ""
-    # Optional visual hints extracted from website images. These are noisy by nature,
-    # so the LLM must treat them as weak evidence and only use them when plausible.
-    image_color_hints: list[str] = Field(default_factory=list)
+    # Crane image URLs found on this page (downloaded and analysed by the vision model).
+    crane_image_urls: list[str] = Field(default_factory=list)
 
     @field_validator("url", "title", "text", mode="before")
     @classmethod
@@ -56,13 +57,13 @@ class ScrapedPage(BaseModel):
             return ""
         return str(value)
 
-    @field_validator("image_color_hints", mode="before")
+    @field_validator("crane_image_urls", mode="before")
     @classmethod
-    def _normalize_image_color_hints(cls, value: object) -> list[str]:
+    def _normalize_crane_image_urls(cls, value: object) -> list[str]:
         if value is None:
             return []
         if isinstance(value, str):
-            return [part.strip() for part in value.replace("\n", "|").split("|") if part.strip()]
+            return [p.strip() for p in value.replace("\n", "|").split("|") if p.strip()]
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return []
@@ -91,11 +92,38 @@ class CompanyEnrichment(BaseModel):
         description="Short explanation of the decision. Do not include hidden chain-of-thought."
     )
 
-    # New CRM enrichment fields requested in v3.
     company_website_url: str = Field(
         default="",
         description="Best website URL to open from the CRM table; prefer verified_url, official workbook URL, or official email domain website.",
     )
+
+    official_website_confidence: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="Confidence that company_website_url is the official company-owned website, not a profile or marketplace.",
+    )
+    site_status: str = Field(
+        default="",
+        description="Official site resolution status: official_site_found, profile_only, dead_or_parked, weak_candidates, or no_official_site.",
+    )
+    site_rejection_reason: str = Field(
+        default="",
+        description="Short reason why no official website was accepted, or why candidates were rejected.",
+    )
+    profile_urls: list[str] = Field(
+        default_factory=list,
+        description="Company profile/platform/marketplace URLs found but not accepted as official websites.",
+    )
+    rejected_urls: list[str] = Field(
+        default_factory=list,
+        description="Rejected URL candidates with reasons, for audit/debugging.",
+    )
+    official_site_debug: str = Field(
+        default="",
+        description="Compact debug trace of official-site candidate scoring.",
+    )
+
     crane_capacity_range: str = Field(
         default="Unknown",
         description="Condensed capacity range of mobile cranes the company works with, e.g. '40-700 t'. Use 'Unknown' when not evidenced.",
@@ -120,17 +148,23 @@ class CompanyEnrichment(BaseModel):
     )
     crane_color_scheme: str = Field(
         default="Unknown",
-        description="Known or likely crane/equipment color scheme, e.g. 'boom - blue; main body - red'. Use Unknown if not supported.",
+        description="Physical crane/equipment color scheme determined by vision model analysis of actual crane images.",
     )
     color_confidence: float = Field(
         default=0.0,
         ge=0,
         le=1,
-        description="Confidence that the color scheme is based on relevant evidence, not just a website logo or generic photo.",
+        description="Confidence that the color scheme reflects the actual physical equipment paint, not website UI.",
     )
     color_evidence_note: str = Field(
         default="",
-        description="Brief note explaining whether color evidence came from text, images, or was unavailable.",
+        description="Brief note explaining how color was determined (vision model, text, or unavailable).",
+    )
+
+    # Observability: which pipeline path produced this record.
+    enrichment_path: EnrichmentPath = Field(
+        default="fallback",
+        description="Which pipeline path produced this enrichment: llm, heuristic, or fallback.",
     )
 
     @field_validator(
@@ -158,7 +192,7 @@ class CompanyEnrichment(BaseModel):
         if value is None:
             return []
         if isinstance(value, str):
-            return [part.strip() for part in value.replace("\n", "|").split("|") if part.strip()]
+            return [p.strip() for p in value.replace("\n", "|").split("|") if p.strip()]
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return []
@@ -173,3 +207,10 @@ class CompanyEnrichment(BaseModel):
         except (TypeError, ValueError):
             return 0.0
         return max(0.0, min(1.0, number))
+
+    @field_validator("enrichment_path", mode="before")
+    @classmethod
+    def _coerce_enrichment_path(cls, value: object) -> str:
+        if value in {"llm", "heuristic", "fallback"}:
+            return str(value)
+        return "fallback"
