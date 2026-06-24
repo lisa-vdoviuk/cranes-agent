@@ -206,10 +206,24 @@ def resolve_official_site(
     official_site_required: bool = True,
     allow_profile_as_verified_url: bool = False,
     max_profile_evidence_urls: int = 2,
+    parked_urls: set[str] | None = None,
 ) -> OfficialSiteResolution:
+    """Resolve the best official website URL for a company.
+
+    Parameters
+    ----------
+    parked_urls:
+        Set of URLs already identified as parked / expired / for-sale by the
+        parked_domain_detector.  Any URL in this set is immediately rejected
+        with status ``dead_or_parked`` rather than being scored as an official
+        site.  Scraper-level filtering should mean this set is rarely non-empty,
+        but it acts as a defence-in-depth safety net (e.g. for URLs coming from
+        the workbook ``existing_web`` column that were never scraped).
+    """
     company_name = str(company_record.get("company_name", "") or "").strip()
     existing_web = str(company_record.get("existing_web", "") or "").strip()
     verified_url = str(company_record.get("verified_url", "") or "").strip()
+    parked_urls = parked_urls or set()
 
     candidates: dict[str, dict[str, object]] = {}
 
@@ -261,6 +275,22 @@ def resolve_official_site(
 
     profile_urls: list[str] = [url for url, info in candidates.items() if info["category"] == "profile"]
     rejected_urls: list[str] = [f"{url} ({info['category']})" for url, info in candidates.items() if url != best_url]
+
+    # ── Defence-in-depth: reject any best_url flagged as parked ──────────
+    if best_url in parked_urls:
+        debug = (
+            f"best={best_url} score={best_score:.1f} category={best_category} "
+            f"status=dead_or_parked (parked_urls hit); candidates={len(candidates)}"
+        )
+        return OfficialSiteResolution(
+            best_url="",
+            confidence=0.0,
+            status="dead_or_parked",
+            rejection_reason="Domain appears to be parked, expired, or for sale.",
+            profile_urls=profile_urls[:max_profile_evidence_urls],
+            rejected_urls=rejected_urls,
+            debug=debug,
+        )
 
     if best_category == "official_site" and best_score >= min_official_score:
         status = "official_site_found"

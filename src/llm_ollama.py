@@ -60,7 +60,19 @@ Evidence rules:
 - If there is company-specific crane/heavy-lifting evidence, Active confidence may reach 0.70-0.95.
 - If no relevant evidence URL exists, verified_url must be an empty string.
 - Do not invent crane capacities or job roles.
-- Legacy workbook contacts are valid CRM contacts unless website evidence proves a different sales role.\
+- Legacy workbook contacts are valid CRM contacts unless website evidence proves a different sales role.
+
+Parked / expired / for-sale domain rules (CRITICAL):
+- If the only web evidence for a URL describes the domain as being for sale, parked, expired,
+  or redirects to a domain registrar or parking service (e.g. GoDaddy, Sedo, IONOS, Strato,
+  united-domains, 1&1, Namecheap, dan.com, etc.), you MUST treat that URL as invalid.
+- German equivalents to watch for: "Domain kaufen", "Domain zu verkaufen", "Domain erwerben",
+  "Domain abgelaufen", "Hier entsteht", "Website im Aufbau", "Demnächst verfügbar",
+  "Jetzt Domain registrieren", "Domain ist verfügbar", "Domain noch nicht registriert".
+- Do NOT assign Active status, do NOT set company_website_url or verified_url, and do NOT
+  use such a page as evidence of company activity.
+- If all available URLs are parked or invalid, treat the company as having no verifiable
+  web presence; use Unclear or Defunct as appropriate and set confidence <= 0.40.\
 """
 
 CAPACITY_PATTERN = re.compile(
@@ -591,6 +603,10 @@ def _postprocess_enrichment(
         official_site_required=getattr(settings, "official_site_required", True),
         allow_profile_as_verified_url=getattr(settings, "allow_profile_as_verified_url", False),
         max_profile_evidence_urls=getattr(settings, "max_profile_evidence_urls", 2),
+        parked_urls={
+            p.url for p in scraped_pages
+            if getattr(p, "domain_health", "ok").startswith("parked:")
+        },
     )
     enrichment.company_website_url = site_resolution.best_url or ""
     enrichment.official_website_confidence = site_resolution.confidence

@@ -1,0 +1,5 @@
+row,company_name,country,old_company_website_url,new_official_url,official_website_confidence,site_status,site_rejection_reason,old_url_would_be_removed,parked_urls_detected,parked_evidence,profile_urls,rejected_urls,official_site_debug
+1,"MUHAN T & C CO.,LTD",Korea,,,0.0,no_official_site,No candidate URLs were available.,False,,,,,no candidates
+2,Hanho International,Korea,,,0.0,no_official_site,No candidate URLs were available.,False,,,,,no candidates
+3,Crane4U,Alemania,,,0.0,no_official_site,No candidate URLs were available.,False,,,,,no candidates
+4,Crane4U,Alemania,,,0.0,no_official_site,No candidate URLs were available.,False,,,,,no candidates

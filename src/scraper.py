@@ -12,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import Settings
 from src.constants import IMAGE_RELEVANCE_TERMS
+from src.parked_domain_detector import DomainHealthResult, check_domain_health
 from src.schemas import ScrapedPage, SearchResult
 from src.site_verifier import classify_url_category, filter_results_for_scraping
 from src.utils import safe_hash, truncate_text
@@ -353,6 +354,9 @@ def scrape_search_results(
     For each page, extract text content AND collect URLs of crane images found on the
     page. The image URLs are stored in ScrapedPage.crane_image_urls so the vision
     model can analyse them later (in color_inference.py).
+
+    Pages whose domain appears to be parked, expired, or for sale are silently
+    skipped so they cannot pollute the official-site resolver or the LLM prompt.
     """
     search_results = filter_results_for_scraping(search_results)
     pages: list[ScrapedPage] = []
@@ -376,12 +380,18 @@ def scrape_search_results(
             if use_cache:
                 cached = _load_page_cache(url, settings)
                 if cached and len(cached.get("text", "").strip()) >= settings.min_page_text_chars:
+                    # Respect previously detected parked status stored in cache.
+                    cached_health = cached.get("domain_health", "ok")
+                    if cached_health.startswith("parked:"):
+                        print(f"  [PARKED] Skipping cached parked domain {url}: {cached_health}")
+                        break
                     pages.append(
                         ScrapedPage(
                             url=url,
                             title=cached.get("title", result.title),
                             text=truncate_text(cached["text"], settings.max_page_text_chars),
                             crane_image_urls=cached.get("crane_image_urls", []),
+                            domain_health=cached_health,
                         )
                     )
                     break
@@ -402,12 +412,30 @@ def scrape_search_results(
             if len(text) < settings.min_page_text_chars:
                 continue
 
+            # ---- Parked-domain check (runs before caching) ----
+            health: DomainHealthResult = check_domain_health(final_url, html, text)
+            if health.is_parked:
+                health_tag = f"parked:{health.detection_method}:{health.evidence}"
+                print(
+                    f"  [PARKED] Skipping {url} → {final_url}: "
+                    f"{health.detection_method} matched '{health.evidence}'"
+                )
+                # Cache the parked verdict so repeat runs skip the live fetch.
+                _save_page_cache(final_url, settings, {
+                    "title": title,
+                    "text": text,
+                    "crane_image_urls": [],
+                    "domain_health": health_tag,
+                })
+                break   # Don't try other URL variants for the same result
+
             crane_image_urls = find_crane_image_candidates(html, base_url=final_url)
 
             _save_page_cache(final_url, settings, {
                 "title": title,
                 "text": text,
                 "crane_image_urls": crane_image_urls,
+                "domain_health": "ok",
             })
 
             pages.append(
@@ -416,6 +444,7 @@ def scrape_search_results(
                     title=title,
                     text=text,
                     crane_image_urls=crane_image_urls,
+                    domain_health="ok",
                 )
             )
             break

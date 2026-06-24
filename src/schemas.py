@@ -27,6 +27,17 @@ MarketRole = Literal[
 
 EnrichmentPath = Literal["llm", "heuristic", "fallback"]
 
+# Formalised site-status values produced by resolve_official_site() and the
+# parked-domain detector.  "dead_or_parked" is now actually emitted (previously
+# referenced in docstrings but never produced by the code).
+SiteStatus = Literal[
+    "official_site_found",
+    "dead_or_parked",
+    "profile_only",
+    "weak_candidates",
+    "no_official_site",
+]
+
 
 class SearchResult(BaseModel):
     title: str = ""
@@ -49,6 +60,9 @@ class ScrapedPage(BaseModel):
     text: str = ""
     # Crane image URLs found on this page (downloaded and analysed by the vision model).
     crane_image_urls: list[str] = Field(default_factory=list)
+    # Health verdict from parked_domain_detector.  Values: "ok" or
+    # "parked:<method>:<evidence>" — stored in page cache for audit traceability.
+    domain_health: str = "ok"
 
     @field_validator("url", "title", "text", mode="before")
     @classmethod
