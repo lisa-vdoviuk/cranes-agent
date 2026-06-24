@@ -1,2 +1,5 @@
 .venv/
 data/cache/
+src/__pycache__/
+app/__pycache__/
+*.pyc
