@@ -16,6 +16,7 @@ from src.excel_loader import DEFAULT_GERMANY_FILTER, DEFAULT_SHEET, load_legacy_
 from src.llm_ollama import enrich_company_with_llm
 from src.scraper import scrape_search_results
 from src.search import search_company_web
+from src.website_cleaner import clean_enriched_csv, default_clean_output_path
 
 SCHEMA_VERSION = "v4"
 LOGGER = logging.getLogger("crane_enrichment")
@@ -75,6 +76,8 @@ def log_settings(settings: Settings) -> None:
     LOGGER.info("  OFFICIAL_SITE_REQUIRED=%s", getattr(settings, "official_site_required", True))
     LOGGER.info("  SITE_MIN_OFFICIAL_SCORE=%s", getattr(settings, "site_min_official_score", 60))
     LOGGER.info("  ALLOW_PROFILE_AS_VERIFIED_URL=%s", getattr(settings, "allow_profile_as_verified_url", False))
+    LOGGER.info("  CLEAN_MIN_IDENTITY_SCORE=%s", getattr(settings, "clean_min_identity_score", 50))
+    LOGGER.info("  CLEAN_MAX_WEBSITE_CANDIDATES=%s", getattr(settings, "clean_max_website_candidates", 8))
 
 
 # ---------------------------------------------------------------------------
@@ -481,13 +484,13 @@ def enrich_dataframe(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Enrich the crane CRM Excel workbook with explicit Ollama diagnostics."
+        description="Enrich the crane CRM Excel workbook and optionally create a clean website-validated dataset."
     )
 
     parser.add_argument(
         "--input",
-        required=True,
-        help="Path to input .xlsx file, e.g. 'data/input/!E-MAIL PEDIDOS MUNDO.xlsx'.",
+        required=False,
+        help="Path to input .xlsx file, e.g. 'data/input/!E-MAIL PEDIDOS MUNDO.xlsx'. Required unless --clean-only is used.",
     )
     parser.add_argument(
         "--output",
@@ -558,11 +561,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strict-ollama",
         action="store_true",
-        default=True,
+        default=False,
         help=(
             "Fail before processing if LLM/Vision is enabled but Ollama or the requested model is unavailable."
         ),
     )
+    parser.add_argument(
+        "--clean-websites",
+        action="store_true",
+        help=(
+            "After enrichment, live-validate company_website_url/verified_url/existing_web "
+            "and write a second clean CSV where only active official websites remain. "
+            "Profile, social, marketplace, parked, expired, unpaid-domain and default-hosting pages are rejected."
+        ),
+    )
+    parser.add_argument(
+        "--clean-only",
+        action="store_true",
+        help=(
+            "Skip Excel enrichment and clean an existing enriched CSV. The CSV path is taken "
+            "from --output; --clean-output controls where the cleaned CSV is written."
+        ),
+    )
+    parser.add_argument(
+        "--clean-output",
+        default=None,
+        help=(
+            "Output path for --clean-websites/--clean-only. Default: same as --output "
+            "with '_clean' before .csv, e.g. data/output/enriched_companies_clean.csv."
+        ),
+    )
+
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -578,9 +607,33 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _run_clean_websites(output_path: str | Path, clean_output: str | Path | None = None) -> Path:
+    settings = get_settings()
+    input_path = Path(output_path)
+    clean_path = Path(clean_output) if clean_output else default_clean_output_path(input_path)
+    LOGGER.info("Running clean website validation: input=%s output=%s", input_path, clean_path)
+    clean_df = clean_enriched_csv(input_path, clean_path, settings=settings, logger=LOGGER)
+    LOGGER.info("Clean website validation finished. Rows=%s output=%s", len(clean_df), clean_path)
+    if "clean_website_status" in clean_df.columns:
+        counts = clean_df["clean_website_status"].value_counts(dropna=False).to_dict()
+        LOGGER.info("Clean website statuses: %s", counts)
+    return clean_path
+
+
 def main() -> None:
     args = parse_args()
     configure_logging(args.log_level, args.log_file)
+
+    if args.clean_only:
+        if not Path(args.output).exists():
+            raise FileNotFoundError(
+                f"--clean-only expects --output to point to an existing enriched CSV. Not found: {args.output}"
+            )
+        _run_clean_websites(args.output, args.clean_output)
+        return
+
+    if not args.input:
+        raise SystemExit("--input is required unless --clean-only is used.")
 
     country_filter = None if args.all_countries else args.country_contains
 
@@ -607,6 +660,9 @@ def main() -> None:
         auto_disable_ollama_if_down=not args.no_auto_disable_ollama_if_down,
         strict_ollama=args.strict_ollama,
     )
+
+    if args.clean_websites:
+        _run_clean_websites(args.output, args.clean_output)
 
 
 if __name__ == "__main__":

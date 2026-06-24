@@ -67,6 +67,12 @@ class Settings:
     allow_profile_as_verified_url: bool = False
     max_profile_evidence_urls: int = 2
 
+    # ------------------------------------------------------------------ #
+    # Clean website validation                                             #
+    # ------------------------------------------------------------------ #
+    clean_min_identity_score: int = 50
+    clean_max_website_candidates: int = 8
+
 
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -108,6 +114,8 @@ def get_settings() -> Settings:
         site_min_official_score=_env_int("SITE_MIN_OFFICIAL_SCORE", 60),
         allow_profile_as_verified_url=_env_bool("ALLOW_PROFILE_AS_VERIFIED_URL", False),
         max_profile_evidence_urls=_env_int("MAX_PROFILE_EVIDENCE_URLS", 2),
+        clean_min_identity_score=_env_int("CLEAN_MIN_IDENTITY_SCORE", 50),
+        clean_max_website_candidates=_env_int("CLEAN_MAX_WEBSITE_CANDIDATES", 8),
     )
 
 

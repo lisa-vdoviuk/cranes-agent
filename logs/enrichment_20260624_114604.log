@@ -1,0 +1,6 @@
+2026-06-24 11:46:04 | INFO     | Logging started. File: logs\enrichment_20260624_114604.log
+2026-06-24 11:46:04 | INFO     | Running clean website validation: input=data\output\enriched_companies.csv output=data\output\enriched_pipeline_clean.csv
+2026-06-24 11:46:04 | INFO     | [1/279] Cleaning website: Crane4U
+2026-06-24 11:46:04 | DEBUG    | Website clean candidate company=Crane4U url=https://www.datanyze.com/companies/crane4ucom/537294506 status=rejected reason=platform_or_profile_url:profile final= identity=0 health=ok
+2026-06-24 11:46:09 | DEBUG    | Website clean candidate company=Crane4U url=https://www.zoominfo.com/c/crane4ucom/537294506 status=rejected reason=weak_company_identity:32<50 final=https://www.zoominfo.com/ identity=32 health=ok
+2026-06-24 11:46:09 | DEBUG    | Website clean candidate company=Crane4U url=https://branchenbuch.meinestadt.de/nidda/company/502613668 status=rejected reason=platform_or_profile_url:profile final= identity=0 health=ok

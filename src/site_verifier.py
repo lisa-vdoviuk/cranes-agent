@@ -47,18 +47,21 @@ DIRECTORY_DOMAINS = {
 PROFILE_HINTS = {
     "/profile/",
     "/company/",
-    "/unternehmen/",
+    "/companies/",
     "/firma/",
-    "/about-us/",
-    "/about/",
-    "/impressum/",
-    "/kontakt/",
-    "/kontaktaufnahme/",
+    "/firmen/",
+    "/unternehmen/",
     "/pages/",
     "/p/",
     "/people/",
-    "/team/",
     "/person/",
+}
+
+# Paths such as /kontakt or /impressum are positive evidence on an official
+# company domain.  They should not be classified as profile URLs by themselves.
+OFFICIAL_EVIDENCE_PATH_HINTS = {
+    "kontakt", "kontaktaufnahme", "contact", "impressum", "legal", "about",
+    "about-us", "unternehmen", "firma",
 }
 
 COMPANY_STOPWORDS = {
@@ -116,11 +119,10 @@ def classify_url_category(url: str) -> str:
         return "marketplace"
     if any(directory in domain for directory in DIRECTORY_DOMAINS):
         return "directory"
+    # Treat platform profile patterns as non-official only when the path is a
+    # typical hosted profile/listing path.  Do not reject /kontakt or /impressum
+    # on a real company domain.
     if any(hint in path for hint in PROFILE_HINTS):
-        return "profile"
-    if path and path != "/" and len(path.split("/")) <= 2 and any(
-        hint in path for hint in {"kontakt", "impressum", "about", "company"}
-    ):
         return "profile"
     if domain.endswith("wikipedia.org"):
         return "directory"
@@ -198,6 +200,25 @@ def _score_candidate(
     return min(max(score, 0.0), 100.0)
 
 
+def _live_ok_domains(scraped_pages: list[ScrapedPage]) -> set[str]:
+    domains: set[str] = set()
+    for page in scraped_pages:
+        health = getattr(page, "domain_health", "ok") or "ok"
+        if health.startswith("parked:"):
+            continue
+        domain = _domain(page.url)
+        if domain:
+            domains.add(domain)
+    return domains
+
+
+def _is_live_validated(url: str, live_domains: set[str]) -> bool:
+    domain = _domain(url)
+    if not domain:
+        return False
+    return any(domain == live_domain or domain.endswith("." + live_domain) or live_domain.endswith("." + domain) for live_domain in live_domains)
+
+
 def resolve_official_site(
     company_record: dict[str, object],
     search_results: list[SearchResult],
@@ -206,10 +227,25 @@ def resolve_official_site(
     official_site_required: bool = True,
     allow_profile_as_verified_url: bool = False,
     max_profile_evidence_urls: int = 2,
+    parked_urls: set[str] | None = None,
 ) -> OfficialSiteResolution:
+    """Resolve the best official website URL for a company.
+
+    Parameters
+    ----------
+    parked_urls:
+        Set of URLs already identified as parked / expired / for-sale by the
+        parked_domain_detector.  Any URL in this set is immediately rejected
+        with status ``dead_or_parked`` rather than being scored as an official
+        site.  Scraper-level filtering should mean this set is rarely non-empty,
+        but it acts as a defence-in-depth safety net (e.g. for URLs coming from
+        the workbook ``existing_web`` column that were never scraped).
+    """
     company_name = str(company_record.get("company_name", "") or "").strip()
     existing_web = str(company_record.get("existing_web", "") or "").strip()
     verified_url = str(company_record.get("verified_url", "") or "").strip()
+    parked_urls = parked_urls or set()
+    live_domains = _live_ok_domains(scraped_pages)
 
     candidates: dict[str, dict[str, object]] = {}
 
@@ -228,6 +264,12 @@ def resolve_official_site(
             existing_web=existing_web,
             verified_url=verified_url,
         )
+        live_validated = _is_live_validated(normalized, live_domains) or bool(page_text.strip())
+        # A raw legacy/email/search URL is only a candidate.  It may not be
+        # accepted as an official CRM website until we have successfully scraped
+        # active, non-parked content on the same domain.
+        if not live_validated and category == "official_site":
+            score = min(score, 55.0)
         candidates[normalized] = {
             "category": category,
             "score": score,
@@ -235,6 +277,7 @@ def resolve_official_site(
             "snippet": snippet,
             "page_text": page_text,
             "source_type": source_type,
+            "live_validated": live_validated,
         }
 
     if existing_web:
@@ -262,9 +305,30 @@ def resolve_official_site(
     profile_urls: list[str] = [url for url, info in candidates.items() if info["category"] == "profile"]
     rejected_urls: list[str] = [f"{url} ({info['category']})" for url, info in candidates.items() if url != best_url]
 
-    if best_category == "official_site" and best_score >= min_official_score:
+    # ── Defence-in-depth: reject any best_url flagged as parked ──────────
+    if best_url in parked_urls:
+        debug = (
+            f"best={best_url} score={best_score:.1f} category={best_category} "
+            f"status=dead_or_parked (parked_urls hit); candidates={len(candidates)}"
+        )
+        return OfficialSiteResolution(
+            best_url="",
+            confidence=0.0,
+            status="dead_or_parked",
+            rejection_reason="Domain appears to be parked, expired, or for sale.",
+            profile_urls=profile_urls[:max_profile_evidence_urls],
+            rejected_urls=rejected_urls,
+            debug=debug,
+        )
+
+    best_live_validated = bool(best_info.get("live_validated"))
+
+    if best_category == "official_site" and best_score >= min_official_score and best_live_validated:
         status = "official_site_found"
         rejection_reason = ""
+    elif best_category == "official_site" and best_score >= min_official_score and not best_live_validated:
+        status = "weak_candidates"
+        rejection_reason = "Official-looking candidate was not live-validated as active non-parked content."
     elif best_category == "official_site" and best_score < min_official_score:
         status = "weak_candidates"
         rejection_reason = "Official-looking site score below threshold."
@@ -289,8 +353,9 @@ def resolve_official_site(
         best_url_output = best_url
 
     debug = (
-        f"best={best_url} score={best_score:.1f} category={best_category} status={status}; "
-        f"profiles={len(profile_urls)} candidates={len(candidates)}"
+        f"best={best_url} score={best_score:.1f} category={best_category} "
+        f"live_validated={best_live_validated} status={status}; "
+        f"profiles={len(profile_urls)} candidates={len(candidates)} live_domains={len(live_domains)}"
     )
 
     return OfficialSiteResolution(

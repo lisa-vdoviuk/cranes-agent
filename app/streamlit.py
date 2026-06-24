@@ -13,6 +13,7 @@ DEFAULT_DATA_PATH = Path("data/output/enriched_companies.csv")
 
 STATUS_OPTIONS = [
     "Active",
+    "Inactive",
     "Acquired",
     "Defunct",
     "Merged",
@@ -399,6 +400,7 @@ COLOR_ALIAS_TO_NAME = {
 
 STATUS_BADGE_CLASS = {
     "Active": "status-active",
+    "Inactive": "status-defunct",
     "Acquired": "status-acquired",
     "Defunct": "status-defunct",
     "Merged": "status-merged",
